@@ -10,7 +10,7 @@ uint {ParameterName}_NumRects;
 // Additional buffers for text metrics
 StructuredBuffer<uint>  {ParameterName}_TextUnicode;
 StructuredBuffer<float2> {ParameterName}_CharacterPositions;
-StructuredBuffer<uint>  {ParameterName}_LineIndices;
+StructuredBuffer<uint>  {ParameterName}_LineStartIndices;
 StructuredBuffer<uint>  {ParameterName}_LineCharacterCounts;
 uint {ParameterName}_NumChars;
 
@@ -67,19 +67,6 @@ void GetTextCharacterCount_{ParameterName}(out int Out_CharacterCount)
 void GetTextLineCount_{ParameterName}(out int Out_LineCount)
 {
 	Out_LineCount = int({ParameterName}_NumLines);
-}
-
-// Returns the 0-based line index for In_CharacterIndex in InputText
-void GetCharacterLineNumber_{ParameterName}(in int In_CharacterIndex, out int Out_LineNumber)
-{
-	if (In_CharacterIndex >= 0 && In_CharacterIndex < int({ParameterName}_NumChars))
-	{
-		Out_LineNumber = int({ParameterName}_LineIndices[In_CharacterIndex]);
-	}
-	else
-	{
-		Out_LineNumber = 0;
-	}
 }
 
 // Returns the number of characters in the specified line index

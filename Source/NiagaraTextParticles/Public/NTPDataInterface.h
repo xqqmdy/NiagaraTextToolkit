@@ -41,7 +41,7 @@ public:
 		SHADER_PARAMETER(		uint32,						NumRects)
 		SHADER_PARAMETER_SRV(	Buffer<uint>,				TextUnicode)
 		SHADER_PARAMETER_SRV(	Buffer<float2>,				CharacterPositions)
-		SHADER_PARAMETER_SRV(	Buffer<uint>,				LineIndices)
+		SHADER_PARAMETER_SRV(	Buffer<uint>,				LineStartIndices)
 		SHADER_PARAMETER_SRV(	Buffer<uint>,				LineCharacterCounts)
 		SHADER_PARAMETER(		uint32,						NumChars)
 		SHADER_PARAMETER(		uint32,						NumLines)
@@ -85,7 +85,6 @@ public:
 
 	void GetCharacterUVVM(FVectorVMExternalFunctionContext& Context);
 	void GetCharacterPositionVM(FVectorVMExternalFunctionContext& Context);
-	void GetCharacterLineNumberVM(FVectorVMExternalFunctionContext& Context);
 	void GetTextCharacterCountVM(FVectorVMExternalFunctionContext& Context);
 	void GetTextLineCountVM(FVectorVMExternalFunctionContext& Context);
 	void GetLineCharacterCountVM(FVectorVMExternalFunctionContext& Context);
@@ -93,7 +92,6 @@ public:
 private:
 	static const FName GetCharacterUVName;
 	static const FName GetCharacterPositionName;
-	static const FName GetCharacterLineNumberName;
 	static const FName GetTextCharacterCountName;
 	static const FName GetTextLineCountName;
 	static const FName GetLineCharacterCountName;

@@ -18,7 +18,6 @@ static const TCHAR* FontUVTemplateShaderFile = TEXT("/Plugin/NiagaraTextParticle
 
 const FName UNTPDataInterface::GetCharacterUVName(TEXT("GetCharacterUV"));
 const FName UNTPDataInterface::GetCharacterPositionName(TEXT("GetCharacterPosition"));
-const FName UNTPDataInterface::GetCharacterLineNumberName(TEXT("GetCharacterLineNumber"));
 const FName UNTPDataInterface::GetTextCharacterCountName(TEXT("GetTextCharacterCount"));
 const FName UNTPDataInterface::GetTextLineCountName(TEXT("GetTextLineCount"));
 const FName UNTPDataInterface::GetLineCharacterCountName(TEXT("GetLineCharacterCount"));
@@ -29,7 +28,7 @@ struct FNDIFontUVInfoInstanceData
 	TArray<FVector4> UVRects;
 	TArray<int32> Unicode;
 	TArray<FVector2f> CharacterPositions;
-	TArray<int32> LineIndices;
+	TArray<int32> LineStartIndices;
 	int32 NumLines = 0;
 	TArray<int32> LineCharacterCounts;
 };
@@ -45,7 +44,7 @@ struct FNDIFontUVInfoProxy : public FNiagaraDataInterfaceProxy
 		uint32 NumRects = 0;
 		FRWBufferStructured UnicodeBuffer;
 		FRWBufferStructured CharacterPositionsBuffer;
-		FRWBufferStructured LineIndexBuffer;
+		FRWBufferStructured LineStartIndicesBuffer;
 		FRWBufferStructured LineCharacterCountBuffer;
 		uint32 NumChars = 0;
 		uint32 NumLines = 0;
@@ -55,7 +54,7 @@ struct FNDIFontUVInfoProxy : public FNiagaraDataInterfaceProxy
 			UVRectsBuffer.Release();
 			UnicodeBuffer.Release();
 			CharacterPositionsBuffer.Release();
-			LineIndexBuffer.Release();
+			LineStartIndicesBuffer.Release();
 			LineCharacterCountBuffer.Release();
 			NumRects = 0;
 			NumChars = 0;
@@ -190,30 +189,30 @@ struct FNDIFontUVInfoProxy : public FNiagaraDataInterfaceProxy
 			RHIUnlockBuffer(RTInstance.CharacterPositionsBuffer.Buffer);
 		}
 
-		// Upload line index buffer
+		// Upload line start indices buffer
 		{
-			const int32 NumLineIndices = InstanceDataFromGT->LineIndices.Num();
+			const int32 NumLineStartIndices = InstanceDataFromGT->LineStartIndices.Num();
 			const uint32 LStride = sizeof(uint32);
-			const uint32 LCount  = FMath::Max(NumLineIndices, 1);
-			RTInstance.LineIndexBuffer.Initialize(TEXT("NTP_LineIndices"), LStride, LCount, BUF_ShaderResource | BUF_Static);
+			const uint32 LCount  = FMath::Max(NumLineStartIndices, 1);
+			RTInstance.LineStartIndicesBuffer.Initialize(TEXT("NTP_LineStartIndices"), LStride, LCount, BUF_ShaderResource | BUF_Static);
 
-			TArray<uint32> TempLineIndices;
-			TempLineIndices.SetNumUninitialized(LCount);
-			if (NumLineIndices > 0)
+			TArray<uint32> TempLineStartIndices;
+			TempLineStartIndices.SetNumUninitialized(LCount);
+			if (NumLineStartIndices > 0)
 			{
-				for (int32 i = 0; i < NumLineIndices; ++i)
+				for (int32 i = 0; i < NumLineStartIndices; ++i)
 				{
-					TempLineIndices[i] = (uint32)InstanceDataFromGT->LineIndices[i];
+					TempLineStartIndices[i] = (uint32)InstanceDataFromGT->LineStartIndices[i];
 				}
 			}
 			else
 			{
-				TempLineIndices[0] = 0;
+				TempLineStartIndices[0] = 0;
 			}
 
-			void* DestL = RHILockBuffer(RTInstance.LineIndexBuffer.Buffer, 0, LStride * LCount, RLM_WriteOnly);
-			FMemory::Memcpy(DestL, TempLineIndices.GetData(), LStride * LCount);
-			RHIUnlockBuffer(RTInstance.LineIndexBuffer.Buffer);
+			void* DestL = RHILockBuffer(RTInstance.LineStartIndicesBuffer.Buffer, 0, LStride * LCount, RLM_WriteOnly);
+			FMemory::Memcpy(DestL, TempLineStartIndices.GetData(), LStride * LCount);
+			RHIUnlockBuffer(RTInstance.LineStartIndicesBuffer.Buffer);
 		}
 
 		// Upload per-line character counts buffer
@@ -349,24 +348,21 @@ bool UNTPDataInterface::InitPerInstanceData(void* PerInstanceData, FNiagaraSyste
 		}
 	}
 
-	// Build per-character line indices (0-based line number for each character)
-	InstanceData->LineIndices.Reset();
-	if (NumChars > 0)
-	{
-		InstanceData->LineIndices.Reserve(NumChars);
-
-		for (int32 LineIndex = 0; LineIndex < Lines.Num(); ++LineIndex)
-		{
-			const TArray<int32>& Line = Lines[LineIndex];
-			for (int32 j = 0; j < Line.Num(); ++j)
-			{
-				InstanceData->LineIndices.Add(LineIndex);
-			}
-		}
-	}
-
 	const int32 NumLines = Lines.Num();
 	InstanceData->NumLines = NumLines;
+
+	// Build per-line start indices (character index where each line starts)
+	InstanceData->LineStartIndices.Reset();
+	if (NumLines > 0)
+	{
+		InstanceData->LineStartIndices.Reserve(NumLines);
+		int32 CurrentCharIndex = 0;
+		for (int32 LineIndex = 0; LineIndex < NumLines; ++LineIndex)
+		{
+			InstanceData->LineStartIndices.Add(CurrentCharIndex);
+			CurrentCharIndex += Lines[LineIndex].Num();
+		}
+	}
 
 	// debug log the lines array
 	for (int32 i = 0; i < Lines.Num(); ++i)
@@ -378,7 +374,7 @@ bool UNTPDataInterface::InitPerInstanceData(void* PerInstanceData, FNiagaraSyste
 			if (j > 0) LineStr += TEXT(", ");
 			LineStr += FString::Printf(TEXT("%d"), Line[j]);
 		}
-		UE_LOG(LogNiagaraTextParticles, Warning, TEXT("NTP DI: InitPerInstanceData - Line[%d] (%d chars) = [%s]"), i, Line.Num(), *LineStr);
+		UE_LOG(LogNiagaraTextParticles, Warning, TEXT("NTP DI: InitPerInstanceData - Line[%d] (%d chars, start=%d) = [%s]"), i, Line.Num(), InstanceData->LineStartIndices[i], *LineStr);
 	}
 
 	// Build per-line character counts
@@ -768,18 +764,6 @@ void UNTPDataInterface::GetFunctions(TArray<FNiagaraFunctionSignature>& OutFunct
 	SigPosition.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetPositionDef(), TEXT("CharacterPosition")));
 	OutFunctions.Add(SigPosition);
 
-	// Register GetCharacterLineNumber
-	FNiagaraFunctionSignature SigLineNumber;
-	SigLineNumber.Name = GetCharacterLineNumberName;
-#if WITH_EDITORONLY_DATA
-	SigLineNumber.Description = LOCTEXT("GetCharacterLineNumberDesc", "Returns the 0-based line index for CharacterIndex in the DI's InputText.");
-#endif
-	SigLineNumber.bMemberFunction = true;
-	SigLineNumber.AddInput(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Font UV Information interface")));
-	SigLineNumber.AddInput(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("CharacterIndex")));
-	SigLineNumber.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("LineNumber")));
-	OutFunctions.Add(SigLineNumber);
-
 	// Register GetTextCharacterCount
 	FNiagaraFunctionSignature SigLen;
 	SigLen.Name = GetTextCharacterCountName;
@@ -834,7 +818,7 @@ void UNTPDataInterface::SetShaderParameters(const FNiagaraDataInterfaceSetShader
 		ShaderParameters->NumRects = RTData->NumRects;
 		ShaderParameters->TextUnicode = RTData->UnicodeBuffer.SRV.IsValid() ? RTData->UnicodeBuffer.SRV : DataInterfaceProxy.DefaultUIntBuffer.SRV;
 		ShaderParameters->CharacterPositions = RTData->CharacterPositionsBuffer.SRV.IsValid() ? RTData->CharacterPositionsBuffer.SRV : DataInterfaceProxy.DefaultFloatBuffer.SRV;
-		ShaderParameters->LineIndices = RTData->LineIndexBuffer.SRV.IsValid() ? RTData->LineIndexBuffer.SRV : DataInterfaceProxy.DefaultUIntBuffer.SRV;
+		ShaderParameters->LineStartIndices = RTData->LineStartIndicesBuffer.SRV.IsValid() ? RTData->LineStartIndicesBuffer.SRV : DataInterfaceProxy.DefaultUIntBuffer.SRV;
 		ShaderParameters->LineCharacterCounts = RTData->LineCharacterCountBuffer.SRV.IsValid() ? RTData->LineCharacterCountBuffer.SRV : DataInterfaceProxy.DefaultUIntBuffer.SRV;
 		ShaderParameters->NumChars = RTData->NumChars;
 		ShaderParameters->NumLines = RTData->NumLines;
@@ -845,7 +829,7 @@ void UNTPDataInterface::SetShaderParameters(const FNiagaraDataInterfaceSetShader
 		ShaderParameters->NumRects = 0;
 		ShaderParameters->TextUnicode = DataInterfaceProxy.DefaultUIntBuffer.SRV;
 		ShaderParameters->CharacterPositions = DataInterfaceProxy.DefaultFloatBuffer.SRV;
-		ShaderParameters->LineIndices = DataInterfaceProxy.DefaultUIntBuffer.SRV;
+		ShaderParameters->LineStartIndices = DataInterfaceProxy.DefaultUIntBuffer.SRV;
 		ShaderParameters->LineCharacterCounts = DataInterfaceProxy.DefaultUIntBuffer.SRV;
 		ShaderParameters->NumChars = 0;
 		ShaderParameters->NumLines = 0;
@@ -896,11 +880,6 @@ void UNTPDataInterface::GetVMExternalFunction(const FVMExternalFunctionBindingIn
 	else if (BindingInfo.Name == GetCharacterPositionName)
 	{
 		OutFunc = FVMExternalFunction::CreateLambda([this](FVectorVMExternalFunctionContext& Context) { this->GetCharacterPositionVM(Context); });
-		UE_LOG(LogNiagaraTextParticles, Log, TEXT("NTP DI: GetVMExternalFunction - Bound function '%s'"), *BindingInfo.Name.ToString());
-	}
-	else if (BindingInfo.Name == GetCharacterLineNumberName)
-	{
-		OutFunc = FVMExternalFunction::CreateLambda([this](FVectorVMExternalFunctionContext& Context) { this->GetCharacterLineNumberVM(Context); });
 		UE_LOG(LogNiagaraTextParticles, Log, TEXT("NTP DI: GetVMExternalFunction - Bound function '%s'"), *BindingInfo.Name.ToString());
 	}
 	else if (BindingInfo.Name == GetTextCharacterCountName)
@@ -1039,29 +1018,6 @@ void UNTPDataInterface::GetTextLineCountVM(FVectorVMExternalFunctionContext& Con
 	}
 }
 
-void UNTPDataInterface::GetCharacterLineNumberVM(FVectorVMExternalFunctionContext& Context)
-{
-	VectorVM::FUserPtrHandler<FNDIFontUVInfoInstanceData> InstData(Context);
-	FNDIInputParam<int32> InCharacterIndex(Context);
-	FNDIOutputParam<int32> OutLineNumber(Context);
-
-	const TArray<int32>& LineIndices = InstData.Get()->LineIndices;
-	const int32 NumChars = LineIndices.Num();
-
-	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
-	{
-		const int32 Index = InCharacterIndex.GetAndAdvance();
-		if (NumChars > 0 && Index >= 0 && Index < NumChars)
-		{
-			OutLineNumber.SetAndAdvance(LineIndices[Index]);
-		}
-		else
-		{
-			OutLineNumber.SetAndAdvance(0);
-		}
-	}
-}
-
 void UNTPDataInterface::GetLineCharacterCountVM(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FNDIFontUVInfoInstanceData> InstData(Context);
@@ -1103,7 +1059,6 @@ bool UNTPDataInterface::GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo&
 {
 	return FunctionInfo.DefinitionName == GetCharacterUVName
 		|| FunctionInfo.DefinitionName == GetCharacterPositionName
-		|| FunctionInfo.DefinitionName == GetCharacterLineNumberName
 		|| FunctionInfo.DefinitionName == GetTextCharacterCountName
 		|| FunctionInfo.DefinitionName == GetTextLineCountName
 		|| FunctionInfo.DefinitionName == GetLineCharacterCountName;
