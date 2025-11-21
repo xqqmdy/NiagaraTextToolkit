@@ -25,12 +25,8 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Niagara Text Particles Plugin", meta = (DisplayName = "Set Niagara Variable (NTP Font)"))
 	static void SetNiagaraNTPFontVariable(UNiagaraComponent* System, UFont* Font);
 
-	UFUNCTION(BlueprintCallable, Category = "Niagara Text Particles Plugin")
-	static bool SaveFontTexturesToAssets(UFont* FontAsset, const FString& FontAssetPath);
-
 private:
 
 	static UNTPDataInterface* FindNTPDataInterface(UNiagaraComponent* System);
 
-	static void ShowSlateNotification(const FText& Message, float Duration = 3.0f);
 };

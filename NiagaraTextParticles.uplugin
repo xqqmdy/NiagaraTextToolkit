@@ -25,6 +25,11 @@
 			"Name": "NiagaraTextParticles",
 			"Type": "Runtime",
 			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "NiagaraTextParticlesEditor",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
 		}
 	]
 }

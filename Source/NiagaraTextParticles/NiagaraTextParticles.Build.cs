@@ -37,17 +37,11 @@ public class NiagaraTextParticles : ModuleRules
 			{
 				"CoreUObject",
 				"Engine",
-				"UnrealEd", // FScopedEditorTransaction
 				"RHI",
 				"Niagara",
 				"RenderCore",
 				"NiagaraCore",
 				"Projects",
-				"Slate",
-				"SlateCore",
-				"AssetTools",
-				"AssetRegistry",
-				"ContentBrowser",
 				// ... add private dependencies that you statically link with here ...	
 			}
 			);
