@@ -4,7 +4,8 @@
 // global functions and parameters, because the template can be included multiple
 // times for different data interfaces in a system.
 
-StructuredBuffer<float4> {ParameterName}_UVRects;
+StructuredBuffer<float4> {ParameterName}_CharacterTextureUvs;
+StructuredBuffer<float2> {ParameterName}_CharacterSpriteSizes;
 uint {ParameterName}_NumRects;
 
 // Additional buffers for text metrics
@@ -28,7 +29,7 @@ void GetCharacterUV_{ParameterName}(in int In_CharacterIndex, out float Out_USiz
 
 	if (Unicode >= 0 && Unicode < {ParameterName}_NumRects)
 	{
-		float4 r = {ParameterName}_UVRects[Unicode];
+		float4 r = {ParameterName}_CharacterTextureUvs[Unicode];
 		Out_USize  = r.x;
 		Out_VSize  = r.y;
 		Out_UStart = r.z;
@@ -60,6 +61,25 @@ void GetCharacterPosition_{ParameterName}(in int In_CharacterIndex, out float3 O
 
 	// see UNTPDataInterface::GetCharacterPositionVM for info on why these are flipped
 	Out_CharacterPosition = float3(0.0f, -p.x, -p.y);
+}
+
+// Returns the sprite size in pixels (Width, Height) for the given character index
+void GetCharacterSpriteSize_{ParameterName}(in int In_CharacterIndex, out float Out_SpriteWidth, out float Out_SpriteHeight)
+{
+	int Unicode = 0;
+	Unicode = {ParameterName}_TextUnicode[In_CharacterIndex];
+
+	if (Unicode >= 0 && Unicode < {ParameterName}_NumRects)
+	{
+		float2 s = {ParameterName}_CharacterSpriteSizes[Unicode];
+		Out_SpriteWidth  = s.x;
+		Out_SpriteHeight = s.y;
+	}
+	else
+	{
+		Out_SpriteWidth  = 0.0f;
+		Out_SpriteHeight = 0.0f;
+	}
 }
 
 // Returns the number of characters in InputText

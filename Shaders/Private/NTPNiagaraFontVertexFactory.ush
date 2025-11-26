@@ -739,6 +739,11 @@ float2 GetNiagaraPivotOffset(uint InstanceID)
 	return SafeGetVec2(NTPNiagaraFontVF.PivotOffsetDataOffset, InstanceID, NTPNiagaraFontVF.DefaultPivotOffset);
 }
 
+float4 GetNiagaraUVRect(uint InstanceID)
+{
+	return SafeGetVec4(NTPNiagaraFontVF.UVRectDataOffset, InstanceID, NTPNiagaraFontVF.DefaultUVRect);
+}
+
 float2 GetNiagaraPreviousPivotOffset(uint InstanceID)
 {
 	return SafeGetVec2(NTPNiagaraFontVF.PrevPivotOffsetDataOffset, InstanceID, NTPNiagaraFontVF.DefaultPrevPivotOffset);
@@ -838,6 +843,7 @@ FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput In
 	const float3 CustomAlignment = SafeNormalize(GetNiagaraParticleAlignmentVector(ParticleID));	
 	const float2 PivotOffset = GetNiagaraPivotOffset(ParticleID);
 	const float2 UVScale = GetNiagaraUVScale(ParticleID);
+	const float4 UVRect = GetNiagaraUVRect(ParticleID);
 	const float3 CameraOffset = SafeNormalize(LWCToFloat(LWCSubtract(ResolvedView.WorldCameraOrigin, ParticlePosition))) * GetNiagaraCameraOffset(ParticleID);
 	
 	Intermediates.SceneData = VF_GPUSCENE_GET_INTERMEDIATES(Input);
@@ -881,6 +887,11 @@ FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput In
 	ComputeBillboardUVs(Input, ParticleSize, SubImageIndex, UVForPosition, UVForTexturing, UVForTexturingUnflipped);
 
 	UVForTexturing.xy = float2(0.5f, 0.5f) + (UVForTexturing.xy - float2(0.5f, 0.5f) ) *  UVScale.xy; 
+
+	// Apply UV Rect (xy = offset, zw = size)
+	UVForTexturing.xy = UVRect.xy + (UVForTexturing.xy * UVRect.zw);
+	UVForTexturingUnflipped.xy = UVRect.xy + (UVForTexturingUnflipped.xy * UVRect.zw);
+
 	const float2 Size = abs(Intermediates.Size.xy);
 
 	// When enabled try to main a pixel sized sprite and optionally fade particles based on coverage

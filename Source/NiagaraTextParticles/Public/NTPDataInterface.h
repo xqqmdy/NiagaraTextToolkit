@@ -37,7 +37,10 @@ class NIAGARATEXTPARTICLES_API UNTPDataInterface : public UNiagaraDataInterface
 
 public:
 	BEGIN_SHADER_PARAMETER_STRUCT(FShaderParameters, )
-		SHADER_PARAMETER_SRV(	Buffer<float4>,				UVRects)
+		// Normalized per-glyph texture UVs (USize, VSize, UStart, VStart), all in 0-1 texture space
+		SHADER_PARAMETER_SRV(	Buffer<float4>,				CharacterTextureUvs)
+		// Per-glyph sprite size in pixels, used for layout / particle sizing
+		SHADER_PARAMETER_SRV(	Buffer<float2>,				CharacterSpriteSizes)
 		SHADER_PARAMETER(		uint32,						NumRects)
 		SHADER_PARAMETER_SRV(	Buffer<uint>,				TextUnicode)
 		SHADER_PARAMETER_SRV(	Buffer<float2>,				CharacterPositions)
@@ -101,6 +104,7 @@ public:
 	void GetFilterWhitespaceCharactersVM(FVectorVMExternalFunctionContext& Context);
 	void GetCharacterCountInWordRangeVM(FVectorVMExternalFunctionContext& Context);
 	void GetCharacterCountInLineRangeVM(FVectorVMExternalFunctionContext& Context);
+	void GetCharacterSpriteSizeVM(FVectorVMExternalFunctionContext& Context);
 
 private:
 	static const FName GetCharacterUVName;
@@ -114,9 +118,13 @@ private:
 	static const FName GetFilterWhitespaceCharactersName;
 	static const FName GetCharacterCountInWordRangeName;
 	static const FName GetCharacterCountInLineRangeName;
+	static const FName GetCharacterSpriteSizeName;
 
-	static TArray<FVector2f> GetCharacterPositions(const TArray<FVector4>& UVRects, const TArray<int32>& VerticalOffsets, int32 Kerning, FString InputString, ENTPTextHorizontalAlignment XAlignment, ENTPTextVerticalAlignment YAlignment);
-	static bool GetFontInfo(const UFont* FontAsset, TArray<FVector4>& OutUVRects, TArray<int32>& OutVerticalOffsets, int32& OutKerning);
+	// Computes per-character positions in local text space using per-glyph sprite sizes in pixels.
+	static TArray<FVector2f> GetCharacterPositions(const TArray<FVector2f>& CharacterSpriteSizes, const TArray<int32>& VerticalOffsets, int32 Kerning, FString InputString, ENTPTextHorizontalAlignment XAlignment, ENTPTextVerticalAlignment YAlignment);
+
+	// Extracts per-glyph sprite sizes (pixels), normalized texture UVs, vertical offsets, and global kerning from the font asset.
+	static bool GetFontInfo(const UFont* FontAsset, TArray<FVector4>& OutCharacterTextureUvs, TArray<FVector2f>& OutCharacterSpriteSizes, TArray<int32>& OutVerticalOffsets, int32& OutKerning);
 
 	static void ProcessText(
 		const FString& InputText,

@@ -226,7 +226,7 @@ void FNTPNiagaraRendererFonts::CreateRenderThreadResources()
 
 bool FNTPNiagaraRendererFonts::AllowComputeShaders(EShaderPlatform ShaderPlatform)
 {
-    return false;
+    //return false;
 	static const auto* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("fx.NiagaraAllowComputeShaders"));
 	const bool bAllowed = CVar ? (CVar->GetInt() != 0) : true; // Default to true if not found, matches standard default
 	return bAllowed && GRHISupportsDrawIndirect;
@@ -234,7 +234,7 @@ bool FNTPNiagaraRendererFonts::AllowComputeShaders(EShaderPlatform ShaderPlatfor
 
 bool FNTPNiagaraRendererFonts::AllowGPUSorting(EShaderPlatform ShaderPlatform)
 {
-    return false;
+    //return false;
 	static const auto* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("FX.AllowGPUSorting"));
 	// Default to 0 (false) if not found to be safe, though usually it exists.
 	return CVar && (CVar->GetInt() != 0);
@@ -242,7 +242,7 @@ bool FNTPNiagaraRendererFonts::AllowGPUSorting(EShaderPlatform ShaderPlatform)
 
 bool FNTPNiagaraRendererFonts::AllowGPUCulling(EShaderPlatform ShaderPlatform)
 {
-    return false;
+    //return false;
 	static const auto* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("Niagara.GPUCulling"));
 	const bool bAllowed = CVar ? (CVar->GetInt() != 0) : true;
 	return bAllowed && AllowGPUSorting(ShaderPlatform) && AllowComputeShaders(ShaderPlatform);
@@ -578,6 +578,7 @@ FNTPNiagaraFontUniformBufferRef FNTPNiagaraRendererFonts::CreateViewUniformBuffe
 	PerViewUniformParameters.DefaultSize = FVector2f(50.f, 50.0f);
 	PerViewUniformParameters.DefaultPrevSize = PerViewUniformParameters.DefaultSize;
 	PerViewUniformParameters.DefaultUVScale = FVector2f(1.0f, 1.0f);
+	PerViewUniformParameters.DefaultUVRect = FVector4f(0.0f, 0.0f, 1.0f, 1.0f);
 	PerViewUniformParameters.DefaultPivotOffset = PivotInUVSpace;
 	PerViewUniformParameters.DefaultPrevPivotOffset = PerViewUniformParameters.DefaultPivotOffset;
 	PerViewUniformParameters.DefaultVelocity = FVector3f(0.f, 0.0f, 0.0f);
@@ -672,6 +673,7 @@ FNTPNiagaraFontUniformBufferRef FNTPNiagaraRendererFonts::CreateViewUniformBuffe
 		PerViewUniformParameters.CameraOffsetDataOffset = VFVariables[ENTPNiagaraSpriteVFLayout::CameraOffset].GetGPUOffset();
 		PerViewUniformParameters.UVScaleDataOffset = VFVariables[ENTPNiagaraSpriteVFLayout::UVScale].GetGPUOffset();
 		PerViewUniformParameters.PivotOffsetDataOffset = VFVariables[ENTPNiagaraSpriteVFLayout::PivotOffset].GetGPUOffset();
+		PerViewUniformParameters.UVRectDataOffset = VFVariables[ENTPNiagaraSpriteVFLayout::UVRect].GetGPUOffset();
 		PerViewUniformParameters.NormalizedAgeDataOffset = VFVariables[ENTPNiagaraSpriteVFLayout::NormalizedAge].GetGPUOffset();
 		PerViewUniformParameters.MaterialRandomDataOffset = VFVariables[ENTPNiagaraSpriteVFLayout::MaterialRandom].GetGPUOffset();
 		if (bAccurateMotionVectors)
@@ -704,6 +706,7 @@ FNTPNiagaraFontUniformBufferRef FNTPNiagaraRendererFonts::CreateViewUniformBuffe
 		PerViewUniformParameters.CameraOffsetDataOffset = INDEX_NONE;
 		PerViewUniformParameters.UVScaleDataOffset = INDEX_NONE;
 		PerViewUniformParameters.PivotOffsetDataOffset = INDEX_NONE;
+		PerViewUniformParameters.UVRectDataOffset = INDEX_NONE;
 		PerViewUniformParameters.NormalizedAgeDataOffset = INDEX_NONE;
 		PerViewUniformParameters.MaterialRandomDataOffset = INDEX_NONE;
 	}
@@ -773,6 +776,9 @@ FNTPNiagaraFontUniformBufferRef FNTPNiagaraRendererFonts::CreateViewUniformBuffe
 					break;
 				case ENTPNiagaraSpriteVFLayout::Type::PivotOffset:
 					FMemory::Memcpy(&PerViewUniformParameters.DefaultPivotOffset, DynamicDataSprites->ParameterDataBound.GetData() + VFBoundOffsetsInParamStore[i], sizeof(FVector2f));
+					break;
+				case ENTPNiagaraSpriteVFLayout::Type::UVRect:
+					FMemory::Memcpy(&PerViewUniformParameters.DefaultUVRect, DynamicDataSprites->ParameterDataBound.GetData() + VFBoundOffsetsInParamStore[i], sizeof(FVector4f));
 					break;
 				case ENTPNiagaraSpriteVFLayout::Type::MaterialRandom:
 					FMemory::Memcpy(&PerViewUniformParameters.DefaultMatRandom, DynamicDataSprites->ParameterDataBound.GetData() + VFBoundOffsetsInParamStore[i], sizeof(float));

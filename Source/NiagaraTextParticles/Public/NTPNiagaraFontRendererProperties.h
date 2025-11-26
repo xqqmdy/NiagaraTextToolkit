@@ -86,6 +86,7 @@ namespace ENTPNiagaraSpriteVFLayout
 		MaterialRandom,
 		CustomSorting,
 		NormalizedAge,
+		UVRect,
 
 		Num_Default,
 
@@ -320,6 +321,10 @@ public:
 	/** Which attribute should we use for pivot offset? (NOTE: Values are expected to be in UV space). */
 	UPROPERTY(EditAnywhere, Category = "Bindings")
 	FNiagaraVariableAttributeBinding PivotOffsetBinding;
+
+	/** Which attribute should we use for the UV Rect (Offset + Size)? */
+	UPROPERTY(EditAnywhere, Category = "Bindings")
+	FNiagaraVariableAttributeBinding UVRectBinding;
 
 	/** Which attribute should we use for material randoms when generating sprites?*/
 	UPROPERTY(EditAnywhere, Category = "Bindings")

@@ -111,11 +111,15 @@ const FName UNTPDataInterface::GetWordTrailingWhitespaceCountName(TEXT("GetWordT
 const FName UNTPDataInterface::GetFilterWhitespaceCharactersName(TEXT("GetFilterWhitespaceCharacters"));
 const FName UNTPDataInterface::GetCharacterCountInWordRangeName(TEXT("GetCharacterCountInWordRange"));
 const FName UNTPDataInterface::GetCharacterCountInLineRangeName(TEXT("GetCharacterCountInLineRange"));
+const FName UNTPDataInterface::GetCharacterSpriteSizeName(TEXT("GetCharacterSpriteSize"));
 
 // The struct used to store our data interface data
 struct FNDIFontUVInfoInstanceData
 {
-	TArray<FVector4> UVRects;
+	// Normalized per-glyph UVs in texture space: (USize, VSize, UStart, VStart), all in 0-1
+	TArray<FVector4> CharacterTextureUvs;
+	// Per-glyph sprite size in pixels: (Width, Height)
+	TArray<FVector2f> CharacterSpriteSizes;
 	TArray<int32> Unicode;
 	TArray<FVector2f> CharacterPositions;
 	TArray<int32> LineStartIndices;
@@ -132,7 +136,8 @@ struct FNDIFontUVInfoProxy : public FNiagaraDataInterfaceProxy
 
 	struct FRTInstanceData
 	{
-		FRWBufferStructured UVRectsBuffer;
+		FRWBufferStructured CharacterTextureUvsBuffer;
+		FRWBufferStructured CharacterSpriteSizesBuffer;
 		uint32 NumRects = 0;
 		FRWBufferStructured UnicodeBuffer;
 		FRWBufferStructured CharacterPositionsBuffer;
@@ -147,7 +152,8 @@ struct FNDIFontUVInfoProxy : public FNiagaraDataInterfaceProxy
 
 		void Release()
 		{
-			UVRectsBuffer.Release();
+			CharacterTextureUvsBuffer.Release();
+			CharacterSpriteSizesBuffer.Release();
 			UnicodeBuffer.Release();
 			CharacterPositionsBuffer.Release();
 			LineStartIndicesBuffer.Release();
@@ -171,7 +177,7 @@ struct FNDIFontUVInfoProxy : public FNiagaraDataInterfaceProxy
 	{
 		if (!bDefaultInitialized)
 		{
-			DefaultUVRectsBuffer.Initialize(RHICmdList, TEXT("NTP_UVRects_Default"), sizeof(FVector4f), 1, BUF_ShaderResource | BUF_Static);
+			DefaultUVRectsBuffer.Initialize(RHICmdList, TEXT("NTP_CharacterTextureUvs_Default"), sizeof(FVector4f), 1, BUF_ShaderResource | BUF_Static);
 			const FVector4f Zero(0, 0, 0, 0);
 			void* Dest = RHICmdList.LockBuffer(DefaultUVRectsBuffer.Buffer, 0, sizeof(FVector4f), RLM_WriteOnly);
 			FMemory::Memcpy(Dest, &Zero, sizeof(FVector4f));
@@ -201,8 +207,8 @@ struct FNDIFontUVInfoProxy : public FNiagaraDataInterfaceProxy
 		const FNDIFontUVInfoInstanceData* DataFromGameThread = static_cast<const FNDIFontUVInfoInstanceData*>(InDataFromGameThread);
 		*DataForRenderThread = *DataFromGameThread;
 
-		UE_LOG(LogNiagaraTextParticles, Verbose, TEXT("NTP DI (RT): ProvidePerInstanceDataForRenderThread - InstanceID=%llu, UVRects.Num=%d"),
-			(uint64)SystemInstance, DataForRenderThread->UVRects.Num());
+		UE_LOG(LogNiagaraTextParticles, Verbose, TEXT("NTP DI (RT): ProvidePerInstanceDataForRenderThread - InstanceID=%llu, CharacterTextureUvs.Num=%d"),
+			(uint64)SystemInstance, DataForRenderThread->CharacterTextureUvs.Num());
 	}
 
 	virtual void ConsumePerInstanceDataFromGameThread(void* PerInstanceData, const FNiagaraSystemInstanceID& InstanceID) override
@@ -212,23 +218,23 @@ struct FNDIFontUVInfoProxy : public FNiagaraDataInterfaceProxy
 
 		FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
 
-		// Upload / rebuild structured buffer on RT
-		const int32 NumRects = InstanceDataFromGT->UVRects.Num();
+		// Upload / rebuild structured buffers on RT
+		const int32 NumRects = InstanceDataFromGT->CharacterTextureUvs.Num();
 		RTInstance.Release();
-		const uint32 Stride = sizeof(FVector4f);
-		const uint32 Count  = FMath::Max(NumRects, 1);
+		const uint32 RectStride = sizeof(FVector4f);
+		const uint32 RectCount  = FMath::Max(NumRects, 1);
 		RTInstance.NumRects = (uint32)NumRects;
-		RTInstance.UVRectsBuffer.Initialize(RHICmdList, TEXT("NTP_UVRects"), Stride, Count, BUF_ShaderResource | BUF_Static);
+		RTInstance.CharacterTextureUvsBuffer.Initialize(RHICmdList, TEXT("NTP_CharacterTextureUvs"), RectStride, RectCount, BUF_ShaderResource | BUF_Static);
 
-		const uint32 NumBytes = Stride * Count;
-		// Convert to float4 to match HLSL StructuredBuffer<float4>
+		const uint32 RectNumBytes = RectStride * RectCount;
+		// Convert to float4 to match HLSL StructuredBuffer<float4> for CharacterTextureUvs
 		TArray<FVector4f> TempFloatRects;
-		TempFloatRects.SetNumUninitialized(Count);
+		TempFloatRects.SetNumUninitialized(RectCount);
 		if (NumRects > 0)
 		{
 			for (int32 i = 0; i < NumRects; ++i)
 			{
-				const FVector4& Src = InstanceDataFromGT->UVRects[i];
+				const FVector4& Src = InstanceDataFromGT->CharacterTextureUvs[i];
 				TempFloatRects[i] = FVector4f((float)Src.X, (float)Src.Y, (float)Src.Z, (float)Src.W);
 			}
 		}
@@ -237,9 +243,32 @@ struct FNDIFontUVInfoProxy : public FNiagaraDataInterfaceProxy
 			TempFloatRects[0] = FVector4f(0, 0, 0, 0);
 		}
 
-		void* Dest = RHICmdList.LockBuffer(RTInstance.UVRectsBuffer.Buffer, 0, NumBytes, RLM_WriteOnly);
-		FMemory::Memcpy(Dest, TempFloatRects.GetData(), NumBytes);
-		RHICmdList.UnlockBuffer(RTInstance.UVRectsBuffer.Buffer);
+		void* DestRects = RHICmdList.LockBuffer(RTInstance.CharacterTextureUvsBuffer.Buffer, 0, RectNumBytes, RLM_WriteOnly);
+		FMemory::Memcpy(DestRects, TempFloatRects.GetData(), RectNumBytes);
+		RHICmdList.UnlockBuffer(RTInstance.CharacterTextureUvsBuffer.Buffer);
+
+		// Upload sprite sizes buffer (float2 per glyph, in pixels)
+		{
+			const int32 NumSpriteSizes = InstanceDataFromGT->CharacterSpriteSizes.Num();
+			const uint32 SizeStride = sizeof(FVector2f);
+			const uint32 SizeCount  = FMath::Max(NumSpriteSizes, 1);
+			RTInstance.CharacterSpriteSizesBuffer.Initialize(RHICmdList, TEXT("NTP_CharacterSpriteSizes"), SizeStride, SizeCount, BUF_ShaderResource | BUF_Static);
+
+			TArray<FVector2f> TempSizes;
+			TempSizes.SetNumUninitialized(SizeCount);
+			if (NumSpriteSizes > 0)
+			{
+				FMemory::Memcpy(TempSizes.GetData(), InstanceDataFromGT->CharacterSpriteSizes.GetData(), sizeof(FVector2f) * NumSpriteSizes);
+			}
+			else
+			{
+				TempSizes[0] = FVector2f(0.0f, 0.0f);
+			}
+
+			void* DestSizes = RHICmdList.LockBuffer(RTInstance.CharacterSpriteSizesBuffer.Buffer, 0, SizeStride * SizeCount, RLM_WriteOnly);
+			FMemory::Memcpy(DestSizes, TempSizes.GetData(), SizeStride * SizeCount);
+			RHICmdList.UnlockBuffer(RTInstance.CharacterSpriteSizesBuffer.Buffer);
+		}
 
 		// Upload Unicode buffer
 		{
@@ -404,7 +433,7 @@ struct FNDIFontUVInfoProxy : public FNiagaraDataInterfaceProxy
 		// Call the destructor to clean up the GT data
 		InstanceDataFromGT->~FNDIFontUVInfoInstanceData();
 
-		UE_LOG(LogNiagaraTextParticles, Verbose, TEXT("NTP DI (RT): ConsumePerInstanceDataFromGameThread - InstanceID=%llu, UVRects.Num=%u"),
+		UE_LOG(LogNiagaraTextParticles, Verbose, TEXT("NTP DI (RT): ConsumePerInstanceDataFromGameThread - InstanceID=%llu, CharacterTextureUvs.Num=%u"),
 			(uint64)InstanceID, RTInstance.NumRects);
 	}
 
@@ -416,15 +445,16 @@ bool UNTPDataInterface::InitPerInstanceData(void* PerInstanceData, FNiagaraSyste
 {
 	FNDIFontUVInfoInstanceData* InstanceData = new (PerInstanceData) FNDIFontUVInfoInstanceData;
 
-	TArray<FVector4> UVRects;
+	TArray<FVector4> CharacterTextureUvs;
+	TArray<FVector2f> CharacterSpriteSizes;
 	TArray<int32> VerticalOffsets;
 	int32 Kerning = 0;
-	if (!GetFontInfo(FontAsset, UVRects, VerticalOffsets, Kerning))
+	if (!GetFontInfo(FontAsset, CharacterTextureUvs, CharacterSpriteSizes, VerticalOffsets, Kerning))
 	{
 		UE_LOG(LogNiagaraTextParticles, Warning, TEXT("NTP DI: Failed to get font info from FontAsset '%s'"), *GetNameSafe(FontAsset));
 	}
 	
-	TArray<FVector2f> CharacterPositionsUnfiltered = GetCharacterPositions(UVRects, VerticalOffsets, Kerning, InputText, HorizontalAlignment, VerticalAlignment);
+	TArray<FVector2f> CharacterPositionsUnfiltered = GetCharacterPositions(CharacterSpriteSizes, VerticalOffsets, Kerning, InputText, HorizontalAlignment, VerticalAlignment);
 	
 	TArray<int32> OutUnicode;
 	TArray<FVector2f> OutCharacterPositions;
@@ -435,7 +465,8 @@ bool UNTPDataInterface::InitPerInstanceData(void* PerInstanceData, FNiagaraSyste
 
 	ProcessText(InputText, CharacterPositionsUnfiltered, bFilterWhitespaceCharacters, OutUnicode, OutCharacterPositions, OutLineStartIndices, OutLineCharacterCounts, OutWordStartIndices, OutWordCharacterCounts);
 
-	InstanceData->UVRects = MoveTemp(UVRects);
+	InstanceData->CharacterTextureUvs = MoveTemp(CharacterTextureUvs);
+	InstanceData->CharacterSpriteSizes = MoveTemp(CharacterSpriteSizes);
 	InstanceData->bFilterWhitespaceCharactersValue = bFilterWhitespaceCharacters;
 	InstanceData->Unicode = MoveTemp(OutUnicode);
 	InstanceData->CharacterPositions = MoveTemp(OutCharacterPositions);
@@ -447,23 +478,70 @@ bool UNTPDataInterface::InitPerInstanceData(void* PerInstanceData, FNiagaraSyste
 	return true;
 }
 
-bool UNTPDataInterface::GetFontInfo(const UFont* FontAsset, TArray<FVector4>& OutUVRects, TArray<int32>& OutVerticalOffsets, int32& OutKerning)
+bool UNTPDataInterface::GetFontInfo(const UFont* FontAsset, TArray<FVector4>& OutCharacterTextureUvs, TArray<FVector2f>& OutCharacterSpriteSizes, TArray<int32>& OutVerticalOffsets, int32& OutKerning)
 {
-	OutUVRects.Reset();
+	OutCharacterTextureUvs.Reset();
+	OutCharacterSpriteSizes.Reset();
 	OutVerticalOffsets.Reset();
 	OutKerning = 0;
 
 	// Only offline cached fonts have the Characters array populated
 	if (FontAsset && FontAsset->FontCacheType == EFontCacheType::Offline)
 	{
-		// Copy data from FFontCharacter array to Vector4 array
+		// Try to get the first font texture so we can normalize glyph UVs into 0-1 space.
+		const UTexture2D* FontTexture = nullptr;
+		if (FontAsset->Textures.Num() > 0)
+		{
+			FontTexture = Cast<UTexture2D>(FontAsset->Textures[0]);
+		}
+
+		FVector2f InvTextureSize(1.0f, 1.0f);
+		if (FontTexture)
+		{
+			const float TexW = static_cast<float>(FontTexture->GetSizeX());
+			const float TexH = static_cast<float>(FontTexture->GetSizeY());
+			if (TexW > 0.0f && TexH > 0.0f)
+			{
+				InvTextureSize = FVector2f(1.0f / TexW, 1.0f / TexH);
+			}
+			else
+			{
+				UE_LOG(LogNiagaraTextParticles, Warning,
+					TEXT("NTP DI: Font '%s' texture has invalid size (%f x %f) - UVs will not be normalized"),
+					*GetNameSafe(FontAsset), TexW, TexH);
+			}
+		}
+		else
+		{
+			UE_LOG(LogNiagaraTextParticles, Warning,
+				TEXT("NTP DI: Font '%s' has no textures - UVs will not be normalized"),
+				*GetNameSafe(FontAsset));
+		}
+
+		// Copy data from FFontCharacter array to our arrays
 		const int32 NumCharacters = FontAsset->Characters.Num();
-		OutUVRects.Reserve(NumCharacters);
+		OutCharacterTextureUvs.Reserve(NumCharacters);
+		OutCharacterSpriteSizes.Reserve(NumCharacters);
 		OutVerticalOffsets.Reserve(NumCharacters);
 
 		for (const FFontCharacter& FontChar : FontAsset->Characters)
 		{
-			OutUVRects.Add(FVector4(FontChar.USize, FontChar.VSize, (float)FontChar.StartU, (float)FontChar.StartV));
+			const float USizePx = static_cast<float>(FontChar.USize);
+			const float VSizePx = static_cast<float>(FontChar.VSize);
+			const float UStartPx = static_cast<float>(FontChar.StartU);
+			const float VStartPx = static_cast<float>(FontChar.StartV);
+
+			// Store sprite size in pixels for layout / particle sizing.
+			OutCharacterSpriteSizes.Add(FVector2f(USizePx, VSizePx));
+
+			// Precompute normalized UVs so shaders/materials don't have to divide by texture resolution.
+			const float USizeNorm  = USizePx  * InvTextureSize.X;
+			const float VSizeNorm  = VSizePx  * InvTextureSize.Y;
+			const float UStartNorm = UStartPx * InvTextureSize.X;
+			const float VStartNorm = VStartPx * InvTextureSize.Y;
+
+			// Layout: (USize, VSize, UStart, VStart) in 0-1 texture space.
+			OutCharacterTextureUvs.Add(FVector4(USizeNorm, VSizeNorm, UStartNorm, VStartNorm));
 			OutVerticalOffsets.Add(FontChar.VerticalOffset);
 		}
 
@@ -477,13 +555,13 @@ bool UNTPDataInterface::GetFontInfo(const UFont* FontAsset, TArray<FVector4>& Ou
 	}
 }
 
-TArray<FVector2f> UNTPDataInterface::GetCharacterPositions(const TArray<FVector4>& UVRects, const TArray<int32>& VerticalOffsets, int32 Kerning, FString InputString, ENTPTextHorizontalAlignment XAlignment, ENTPTextVerticalAlignment YAlignment)
+TArray<FVector2f> UNTPDataInterface::GetCharacterPositions(const TArray<FVector2f>& CharacterSpriteSizes, const TArray<int32>& VerticalOffsets, int32 Kerning, FString InputString, ENTPTextHorizontalAlignment XAlignment, ENTPTextVerticalAlignment YAlignment)
 {
 
 	TArray<FVector2f> CharacterPositionsUnfiltered;
 
 	const int32 TextLength = InputString.Len();
-	if (TextLength <= 0 || UVRects.Num() == 0)
+	if (TextLength <= 0 || CharacterSpriteSizes.Num() == 0)
 	{
 		return CharacterPositionsUnfiltered;
 	}
@@ -494,9 +572,9 @@ TArray<FVector2f> UNTPDataInterface::GetCharacterPositions(const TArray<FVector4
 
 	// Global fallback line height in case a line has no drawable characters.
 	float GlobalMaxGlyphHeight = 0.0f;
-	for (const FVector4& Rect : UVRects)
+	for (const FVector2f& Size : CharacterSpriteSizes)
 	{
-		GlobalMaxGlyphHeight = FMath::Max(GlobalMaxGlyphHeight, static_cast<float>(Rect.Y));
+		GlobalMaxGlyphHeight = FMath::Max(GlobalMaxGlyphHeight, Size.Y);
 	}
 
 	const float CharIncrement = static_cast<float>(Kerning); // No extra horizontal spacing in this data interface.
@@ -523,15 +601,15 @@ TArray<FVector2f> UNTPDataInterface::GetCharacterPositions(const TArray<FVector4
 			const int32 Code = static_cast<int32>(Ch);
 
 			// Skip characters that do not have glyph data. (positions will be set to 0,0)
-			if (!UVRects.IsValidIndex(Code) || !VerticalOffsets.IsValidIndex(Code))
+			if (!CharacterSpriteSizes.IsValidIndex(Code) || !VerticalOffsets.IsValidIndex(Code))
 			{
 				continue;
 			}
 
-			const FVector4& UVRect = UVRects[Code];
+			const FVector2f& GlyphSize = CharacterSpriteSizes[Code];
 
-			const float SizeX = static_cast<float>(UVRect.X);
-			const float SizeY = static_cast<float>(UVRect.Y);
+			const float SizeX = GlyphSize.X;
+			const float SizeY = GlyphSize.Y;
 			const float TopY  = static_cast<float>(VerticalOffsets[Code]); // how far from the line's origin its top is
 
 			const float BottomY = TopY + SizeY; // how far from the line's origin its bottom is
@@ -642,15 +720,15 @@ TArray<FVector2f> UNTPDataInterface::GetCharacterPositions(const TArray<FVector4
 			const int32 Code = static_cast<int32>(Ch);
 
 			// Skip characters that do not have glyph data. (positions will be set to 0,0)
-			if (!UVRects.IsValidIndex(Code) || !VerticalOffsets.IsValidIndex(Code))
+			if (!CharacterSpriteSizes.IsValidIndex(Code) || !VerticalOffsets.IsValidIndex(Code))
 			{
 				continue;
 			}
 
-			const FVector4& UVRect = UVRects[Code];
+			const FVector2f& GlyphSize = CharacterSpriteSizes[Code];
 
-			const float SizeX = static_cast<float>(UVRect.X);
-			const float SizeY = static_cast<float>(UVRect.Y);
+			const float SizeX = GlyphSize.X;
+			const float SizeY = GlyphSize.Y;
 			const float TopY  = static_cast<float>(VerticalOffsets[Code]);
 
 			const float GlyphLeft = LineStartX[LineIdx] + LineX;
@@ -971,6 +1049,19 @@ void UNTPDataInterface::GetFunctions(TArray<FNiagaraFunctionSignature>& OutFunct
 	SigCharCountInLineRange.AddInput(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("EndLineIndex")));
 	SigCharCountInLineRange.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("CharacterCountInLineRange")));
 	OutFunctions.Add(SigCharCountInLineRange);
+
+	// Register GetCharacterSpriteSize
+	FNiagaraFunctionSignature SigSpriteSize;
+	SigSpriteSize.Name = GetCharacterSpriteSizeName;
+#if WITH_EDITORONLY_DATA
+	SigSpriteSize.Description = LOCTEXT("GetCharacterSpriteSizeDesc", "Returns the sprite size in pixels (Width, Height) for the given character index.");
+#endif
+	SigSpriteSize.bMemberFunction = true;
+	SigSpriteSize.AddInput(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Font UV Information interface")));
+	SigSpriteSize.AddInput(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("CharacterIndex")));
+	SigSpriteSize.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("SpriteWidth")));
+	SigSpriteSize.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("SpriteHeight")));
+	OutFunctions.Add(SigSpriteSize);
 }
 
 void UNTPDataInterface::BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const
@@ -987,9 +1078,10 @@ void UNTPDataInterface::SetShaderParameters(const FNiagaraDataInterfaceSetShader
 	DataInterfaceProxy.EnsureDefaultBuffer(RHICmdList);
 
 	FShaderParameters* ShaderParameters = Context.GetParameterNestedStruct<FShaderParameters>();
-	if (RTData && RTData->UVRectsBuffer.SRV.IsValid())
+	if (RTData && RTData->CharacterTextureUvsBuffer.SRV.IsValid())
 	{
-		ShaderParameters->UVRects = RTData->UVRectsBuffer.SRV;
+		ShaderParameters->CharacterTextureUvs = RTData->CharacterTextureUvsBuffer.SRV;
+		ShaderParameters->CharacterSpriteSizes = RTData->CharacterSpriteSizesBuffer.SRV.IsValid() ? RTData->CharacterSpriteSizesBuffer.SRV : DataInterfaceProxy.DefaultFloatBuffer.SRV;
 		ShaderParameters->NumRects = RTData->NumRects;
 		ShaderParameters->TextUnicode = RTData->UnicodeBuffer.SRV.IsValid() ? RTData->UnicodeBuffer.SRV : DataInterfaceProxy.DefaultUIntBuffer.SRV;
 		ShaderParameters->CharacterPositions = RTData->CharacterPositionsBuffer.SRV.IsValid() ? RTData->CharacterPositionsBuffer.SRV : DataInterfaceProxy.DefaultFloatBuffer.SRV;
@@ -1004,7 +1096,8 @@ void UNTPDataInterface::SetShaderParameters(const FNiagaraDataInterfaceSetShader
 	}
 	else
 	{
-		ShaderParameters->UVRects = DataInterfaceProxy.DefaultUVRectsBuffer.SRV;
+		ShaderParameters->CharacterTextureUvs = DataInterfaceProxy.DefaultUVRectsBuffer.SRV;
+		ShaderParameters->CharacterSpriteSizes = DataInterfaceProxy.DefaultFloatBuffer.SRV;
 		ShaderParameters->NumRects = 0;
 		ShaderParameters->TextUnicode = DataInterfaceProxy.DefaultUIntBuffer.SRV;
 		ShaderParameters->CharacterPositions = DataInterfaceProxy.DefaultFloatBuffer.SRV;
@@ -1112,6 +1205,11 @@ void UNTPDataInterface::GetVMExternalFunction(const FVMExternalFunctionBindingIn
 		OutFunc = FVMExternalFunction::CreateLambda([this](FVectorVMExternalFunctionContext& Context) { this->GetCharacterCountInLineRangeVM(Context); });
 		UE_LOG(LogNiagaraTextParticles, Log, TEXT("NTP DI: GetVMExternalFunction - Bound function '%s'"), *BindingInfo.Name.ToString());
 	}
+	else if (BindingInfo.Name == GetCharacterSpriteSizeName)
+	{
+		OutFunc = FVMExternalFunction::CreateLambda([this](FVectorVMExternalFunctionContext& Context) { this->GetCharacterSpriteSizeVM(Context); });
+		UE_LOG(LogNiagaraTextParticles, Log, TEXT("NTP DI: GetVMExternalFunction - Bound function '%s'"), *BindingInfo.Name.ToString());
+	}
 	else
 	{
 		UE_LOG(LogNiagaraTextParticles, Display, TEXT("Could not find data interface external function in %s. Received Name: %s"), *GetPathNameSafe(this), *BindingInfo.Name.ToString());
@@ -1130,10 +1228,10 @@ void UNTPDataInterface::GetCharacterUVVM(FVectorVMExternalFunctionContext& Conte
 	FNDIOutputParam<float> OutVStart(Context);
 
 	const TArray<int32>& Unicode = InstData.Get()->Unicode;
-	const TArray<FVector4>& UVRects = InstData.Get()->UVRects;
-	const int32 NumRects = UVRects.Num();
+	const TArray<FVector4>& TextureUvs = InstData.Get()->CharacterTextureUvs;
+	const int32 NumRects = TextureUvs.Num();
 
-	UE_LOG(LogNiagaraTextParticles, Verbose, TEXT("NTP DI: GetUVRectVM - NumInstances=%d, UVRects.Num=%d"),
+	UE_LOG(LogNiagaraTextParticles, Verbose, TEXT("NTP DI: GetCharacterUVVM - NumInstances=%d, CharacterTextureUvs.Num=%d"),
 		Context.GetNumInstances(), NumRects);
 
 	// Iterate over the particles
@@ -1146,7 +1244,7 @@ void UNTPDataInterface::GetCharacterUVVM(FVectorVMExternalFunctionContext& Conte
 		// Bounds check
 		if (NumRects > 0 && UnicodeIndex >= 0 && UnicodeIndex < NumRects)
 		{
-			const FVector4& UVRect = UVRects[UnicodeIndex];
+			const FVector4& UVRect = TextureUvs[UnicodeIndex];
 			OutUSize.SetAndAdvance(UVRect.X);
 			OutVSize.SetAndAdvance(UVRect.Y);
 			OutUStart.SetAndAdvance(UVRect.Z);
@@ -1154,7 +1252,7 @@ void UNTPDataInterface::GetCharacterUVVM(FVectorVMExternalFunctionContext& Conte
 
 			if (i < 4)
 			{
-				UE_LOG(LogNiagaraTextParticles, Verbose, TEXT("NTP DI: VM idx=%d UnicodeIndex=%d -> UV=[%s]"),
+				UE_LOG(LogNiagaraTextParticles, Verbose, TEXT("NTP DI: VM idx=%d UnicodeIndex=%d -> CharacterTextureUV=[%s]"),
 					i, UnicodeIndex, *UVRect.ToString());
 			}
 		}
@@ -1439,6 +1537,37 @@ void UNTPDataInterface::GetCharacterCountInLineRangeVM(FVectorVMExternalFunction
 	}
 }
 
+void UNTPDataInterface::GetCharacterSpriteSizeVM(FVectorVMExternalFunctionContext& Context)
+{
+	VectorVM::FUserPtrHandler<FNDIFontUVInfoInstanceData> InstData(Context);
+	FNDIInputParam<int32> InCharacterIndex(Context);
+	FNDIOutputParam<float> OutWidth(Context);
+	FNDIOutputParam<float> OutHeight(Context);
+
+	const TArray<int32>& Unicode = InstData.Get()->Unicode;
+	const TArray<FVector2f>& SpriteSizes = InstData.Get()->CharacterSpriteSizes;
+	const int32 NumSizes = SpriteSizes.Num();
+
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
+	{
+		const int32 CharacterIndex = InCharacterIndex.GetAndAdvance();
+
+		const int32 UnicodeIndex = (Unicode.IsValidIndex(CharacterIndex)) ? Unicode[CharacterIndex] : -1;
+
+		if (NumSizes > 0 && UnicodeIndex >= 0 && UnicodeIndex < NumSizes)
+		{
+			const FVector2f& Size = SpriteSizes[UnicodeIndex];
+			OutWidth.SetAndAdvance(Size.X);
+			OutHeight.SetAndAdvance(Size.Y);
+		}
+		else
+		{
+			OutWidth.SetAndAdvance(0.0f);
+			OutHeight.SetAndAdvance(0.0f);
+		}
+	}
+}
+
 #if WITH_EDITORONLY_DATA
 
 bool UNTPDataInterface::AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const
@@ -1456,6 +1585,7 @@ bool UNTPDataInterface::GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo&
 {
 	return FunctionInfo.DefinitionName == GetCharacterUVName
 		|| FunctionInfo.DefinitionName == GetCharacterPositionName
+		|| FunctionInfo.DefinitionName == GetCharacterSpriteSizeName
 		|| FunctionInfo.DefinitionName == GetTextCharacterCountName
 		|| FunctionInfo.DefinitionName == GetTextLineCountName
 		|| FunctionInfo.DefinitionName == GetLineCharacterCountName
