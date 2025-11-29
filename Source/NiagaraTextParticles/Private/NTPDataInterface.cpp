@@ -134,6 +134,18 @@ struct FNDIFontUVInfoProxy : public FNiagaraDataInterfaceProxy
 {
 	virtual int32 PerInstanceDataPassedToRenderThreadSize() const override { return sizeof(FNDIFontUVInfoInstanceData); }
 
+	virtual ~FNDIFontUVInfoProxy() override
+	{
+		DefaultUVRectsBuffer.Release();
+		DefaultUIntBuffer.Release();
+		DefaultFloatBuffer.Release();
+	}
+
+	FRWBufferStructured DefaultUVRectsBuffer;
+	FRWBufferStructured DefaultUIntBuffer;
+	FRWBufferStructured DefaultFloatBuffer;
+	bool bDefaultInitialized = false;
+
 	struct FRTInstanceData
 	{
 		FRWBufferStructured CharacterTextureUvsBuffer;
@@ -167,11 +179,6 @@ struct FNDIFontUVInfoProxy : public FNiagaraDataInterfaceProxy
 			bFilterWhitespaceCharactersValue = 1;
 		}
 	};
-
-	FRWBufferStructured DefaultUVRectsBuffer;
-	FRWBufferStructured DefaultUIntBuffer;
-	FRWBufferStructured DefaultFloatBuffer;
-	bool bDefaultInitialized = false;
 
 	void EnsureDefaultBuffer(FRHICommandListBase& RHICmdList)
 	{
