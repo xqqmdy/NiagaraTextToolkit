@@ -4,17 +4,18 @@
 // global functions and parameters, because the template can be included multiple
 // times for different data interfaces in a system.
 
-StructuredBuffer<float4> {ParameterName}_CharacterTextureUvs;
-StructuredBuffer<float2> {ParameterName}_CharacterSpriteSizes;
-uint {ParameterName}_NumRects;
+StructuredBuffer<float> {ParameterName}_PackedBuffer;
 
-// Additional buffers for text metrics
-StructuredBuffer<uint>  {ParameterName}_TextUnicode;
-StructuredBuffer<float2> {ParameterName}_CharacterPositions;
-StructuredBuffer<uint>  {ParameterName}_LineStartIndices;    // First spawnable index per line (or 0 if none)
-StructuredBuffer<uint>  {ParameterName}_LineCharacterCounts; // Spawnable characters per line
-StructuredBuffer<uint>  {ParameterName}_WordStartIndices;    // First spawnable index per word
-StructuredBuffer<uint>  {ParameterName}_WordCharacterCounts; // Spawnable characters per word
+uint {ParameterName}_Offset_UVs;
+uint {ParameterName}_Offset_Sizes;
+uint {ParameterName}_Offset_Unicode;
+uint {ParameterName}_Offset_Positions;
+uint {ParameterName}_Offset_LineStart;
+uint {ParameterName}_Offset_LineCount;
+uint {ParameterName}_Offset_WordStart;
+uint {ParameterName}_Offset_WordCount;
+
+uint {ParameterName}_NumRects;
 uint {ParameterName}_NumChars;                               // Total spawnable character count
 uint {ParameterName}_NumLines;                               // Total lines
 uint {ParameterName}_NumWords;                               // Total words
@@ -23,17 +24,16 @@ uint {ParameterName}_bFilterWhitespaceCharactersValue;       // 1 if filtering w
 
 void GetCharacterUV_{ParameterName}(in int In_CharacterIndex, out float Out_USize, out float Out_VSize, out float Out_UStart, out float Out_VStart)
 {
-
-	int Unicode = 0;
-	Unicode = {ParameterName}_TextUnicode[In_CharacterIndex];
+	int UnicodeBase = {ParameterName}_Offset_Unicode + In_CharacterIndex;
+	int Unicode = asint({ParameterName}_PackedBuffer[UnicodeBase]);
 
 	if (Unicode >= 0 && Unicode < {ParameterName}_NumRects)
 	{
-		float4 r = {ParameterName}_CharacterTextureUvs[Unicode];
-		Out_USize  = r.x;
-		Out_VSize  = r.y;
-		Out_UStart = r.z;
-		Out_VStart = r.w;
+		int Base = {ParameterName}_Offset_UVs + Unicode * 4;
+		Out_USize  = {ParameterName}_PackedBuffer[Base + 0];
+		Out_VSize  = {ParameterName}_PackedBuffer[Base + 1];
+		Out_UStart = {ParameterName}_PackedBuffer[Base + 2];
+		Out_VStart = {ParameterName}_PackedBuffer[Base + 3];
 	}
 	else
 	{
@@ -57,23 +57,25 @@ void GetCharacterPosition_{ParameterName}(in int In_CharacterIndex, out float3 O
 	int idx = In_CharacterIndex;
 	idx = clamp(idx, 0, int({ParameterName}_NumChars) - 1);
 
-	float2 p = {ParameterName}_CharacterPositions[idx];
+	int Base = {ParameterName}_Offset_Positions + idx * 2;
+	float px = {ParameterName}_PackedBuffer[Base + 0];
+	float py = {ParameterName}_PackedBuffer[Base + 1];
 
 	// see UNTTDataInterface::GetCharacterPositionVM for info on why these are flipped
-	Out_CharacterPosition = float3(0.0f, -p.x, -p.y);
+	Out_CharacterPosition = float3(0.0f, -px, -py);
 }
 
 // Returns the sprite size in pixels (Width, Height) for the given character index
 void GetCharacterSpriteSize_{ParameterName}(in int In_CharacterIndex, out float Out_SpriteWidth, out float Out_SpriteHeight)
 {
-	int Unicode = 0;
-	Unicode = {ParameterName}_TextUnicode[In_CharacterIndex];
+	int UnicodeBase = {ParameterName}_Offset_Unicode + In_CharacterIndex;
+	int Unicode = asint({ParameterName}_PackedBuffer[UnicodeBase]);
 
 	if (Unicode >= 0 && Unicode < {ParameterName}_NumRects)
 	{
-		float2 s = {ParameterName}_CharacterSpriteSizes[Unicode];
-		Out_SpriteWidth  = s.x;
-		Out_SpriteHeight = s.y;
+		int Base = {ParameterName}_Offset_Sizes + Unicode * 2;
+		Out_SpriteWidth  = {ParameterName}_PackedBuffer[Base + 0];
+		Out_SpriteHeight = {ParameterName}_PackedBuffer[Base + 1];
 	}
 	else
 	{
@@ -99,7 +101,8 @@ void GetLineCharacterCount_{ParameterName}(in int In_LineIndex, out int Out_Line
 {
 	if (In_LineIndex >= 0 && In_LineIndex < int({ParameterName}_NumLines))
 	{
-		Out_LineCharacterCount = int({ParameterName}_LineCharacterCounts[In_LineIndex]);
+		int Base = {ParameterName}_Offset_LineCount + In_LineIndex;
+		Out_LineCharacterCount = asint({ParameterName}_PackedBuffer[Base]);
 	}
 	else
 	{
@@ -118,7 +121,8 @@ void GetWordCharacterCount_{ParameterName}(in int In_WordIndex, out int Out_Word
 {
 	if (In_WordIndex >= 0 && In_WordIndex < int({ParameterName}_NumWords))
 	{
-		Out_WordCharacterCount = int({ParameterName}_WordCharacterCounts[In_WordIndex]);
+		int Base = {ParameterName}_Offset_WordCount + In_WordIndex;
+		Out_WordCharacterCount = asint({ParameterName}_PackedBuffer[Base]);
 	}
 	else
 	{
@@ -133,8 +137,11 @@ void GetWordTrailingWhitespaceCount_{ParameterName}(in int In_WordIndex, out int
 	
 	if (In_WordIndex >= 0 && In_WordIndex < NumWords)
 	{
-		int StartIndex = int({ParameterName}_WordStartIndices[In_WordIndex]);
-		int Count = int({ParameterName}_WordCharacterCounts[In_WordIndex]);
+		int StartIdxBase = {ParameterName}_Offset_WordStart + In_WordIndex;
+		int CountBase = {ParameterName}_Offset_WordCount + In_WordIndex;
+
+		int StartIndex = asint({ParameterName}_PackedBuffer[StartIdxBase]);
+		int Count = asint({ParameterName}_PackedBuffer[CountBase]);
 		int EndIndex = StartIndex + Count;
 		
 		int NextStartIndex = int({ParameterName}_NumChars);
@@ -142,7 +149,8 @@ void GetWordTrailingWhitespaceCount_{ParameterName}(in int In_WordIndex, out int
 		// If not last word
 		if (In_WordIndex < NumWords - 1)
 		{
-			NextStartIndex = int({ParameterName}_WordStartIndices[In_WordIndex + 1]);
+			int NextStartIdxBase = {ParameterName}_Offset_WordStart + (In_WordIndex + 1);
+			NextStartIndex = asint({ParameterName}_PackedBuffer[NextStartIdxBase]);
 		}
 		
 		int Gap = NextStartIndex - EndIndex;

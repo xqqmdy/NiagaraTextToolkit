@@ -149,8 +149,9 @@ bool UNTTDataInterface::InitPerInstanceData(void* PerInstanceData, FNiagaraSyste
 	InstanceData->WordCharacterCounts = MoveTemp(OutWordCharacterCounts);
 
 	// PUSH TO RENDER THREAD ONCE
-	// We create a copy of the initialized data to pass to the Render Thread.
-	// This happens only on spawn/reset, avoiding per-frame overhead.
+	// instead of updating the render thread every tick, we do it once manually when initalizing.
+	// We don't need per tick updates since the data doesn't change over the life of the system,
+	// and if it doesn, we just call InitPerInstanceData again.
 	FNDIFontUVInfoInstanceData* DataForRT = new FNDIFontUVInfoInstanceData(*InstanceData);
 	FNDIFontUVInfoProxy* RT_Proxy = GetFontProxy();
 	FNiagaraSystemInstanceID InstanceID = SystemInstance->GetId();
@@ -158,7 +159,6 @@ bool UNTTDataInterface::InitPerInstanceData(void* PerInstanceData, FNiagaraSyste
 	ENQUEUE_RENDER_COMMAND(InitNTTDIProxy)(
 		[RT_Proxy, DataForRT, InstanceID](FRHICommandListImmediate& RHICmdList)
 		{
-			UE_LOG(LogNiagaraTextToolkit, Log, TEXT("InitNTTDIProxy: calling UpdateData_RT for InstanceID=%llu"), (uint64)InstanceID);
 			if (RT_Proxy)
 			{
 				RT_Proxy->UpdateData_RT(DataForRT, InstanceID, RHICmdList);
@@ -771,17 +771,20 @@ void UNTTDataInterface::SetShaderParameters(const FNiagaraDataInterfaceSetShader
 	DataInterfaceProxy.EnsureDefaultBuffer(RHICmdList);
 
 	FShaderParameters* ShaderParameters = Context.GetParameterNestedStruct<FShaderParameters>();
-	if (RTData && RTData->CharacterTextureUvsBuffer.SRV.IsValid())
+	if (RTData && RTData->PackedBuffer.SRV.IsValid())
 	{
-		ShaderParameters->CharacterTextureUvs = RTData->CharacterTextureUvsBuffer.SRV;
-		ShaderParameters->CharacterSpriteSizes = RTData->CharacterSpriteSizesBuffer.SRV.IsValid() ? RTData->CharacterSpriteSizesBuffer.SRV : DataInterfaceProxy.DefaultFloatBuffer.SRV;
+		ShaderParameters->PackedBuffer = RTData->PackedBuffer.SRV;
+		
+		ShaderParameters->Offset_UVs = RTData->Offset_UVs;
+		ShaderParameters->Offset_Sizes = RTData->Offset_Sizes;
+		ShaderParameters->Offset_Unicode = RTData->Offset_Unicode;
+		ShaderParameters->Offset_Positions = RTData->Offset_Positions;
+		ShaderParameters->Offset_LineStart = RTData->Offset_LineStart;
+		ShaderParameters->Offset_LineCount = RTData->Offset_LineCount;
+		ShaderParameters->Offset_WordStart = RTData->Offset_WordStart;
+		ShaderParameters->Offset_WordCount = RTData->Offset_WordCount;
+
 		ShaderParameters->NumRects = RTData->NumRects;
-		ShaderParameters->TextUnicode = RTData->UnicodeBuffer.SRV.IsValid() ? RTData->UnicodeBuffer.SRV : DataInterfaceProxy.DefaultUIntBuffer.SRV;
-		ShaderParameters->CharacterPositions = RTData->CharacterPositionsBuffer.SRV.IsValid() ? RTData->CharacterPositionsBuffer.SRV : DataInterfaceProxy.DefaultFloatBuffer.SRV;
-		ShaderParameters->LineStartIndices = RTData->LineStartIndicesBuffer.SRV.IsValid() ? RTData->LineStartIndicesBuffer.SRV : DataInterfaceProxy.DefaultUIntBuffer.SRV;
-		ShaderParameters->LineCharacterCounts = RTData->LineCharacterCountBuffer.SRV.IsValid() ? RTData->LineCharacterCountBuffer.SRV : DataInterfaceProxy.DefaultUIntBuffer.SRV;
-		ShaderParameters->WordStartIndices = RTData->WordStartIndicesBuffer.SRV.IsValid() ? RTData->WordStartIndicesBuffer.SRV : DataInterfaceProxy.DefaultUIntBuffer.SRV;
-		ShaderParameters->WordCharacterCounts = RTData->WordCharacterCountBuffer.SRV.IsValid() ? RTData->WordCharacterCountBuffer.SRV : DataInterfaceProxy.DefaultUIntBuffer.SRV;
 		ShaderParameters->NumChars = RTData->NumChars;
 		ShaderParameters->NumLines = RTData->NumLines;
 		ShaderParameters->NumWords = RTData->NumWords;
@@ -789,15 +792,18 @@ void UNTTDataInterface::SetShaderParameters(const FNiagaraDataInterfaceSetShader
 	}
 	else
 	{
-		ShaderParameters->CharacterTextureUvs = DataInterfaceProxy.DefaultUVRectsBuffer.SRV;
-		ShaderParameters->CharacterSpriteSizes = DataInterfaceProxy.DefaultFloatBuffer.SRV;
+		ShaderParameters->PackedBuffer = DataInterfaceProxy.PackedBuffer.SRV;
+		
+		ShaderParameters->Offset_UVs = 0;
+		ShaderParameters->Offset_Sizes = 0;
+		ShaderParameters->Offset_Unicode = 0;
+		ShaderParameters->Offset_Positions = 0;
+		ShaderParameters->Offset_LineStart = 0;
+		ShaderParameters->Offset_LineCount = 0;
+		ShaderParameters->Offset_WordStart = 0;
+		ShaderParameters->Offset_WordCount = 0;
+
 		ShaderParameters->NumRects = 0;
-		ShaderParameters->TextUnicode = DataInterfaceProxy.DefaultUIntBuffer.SRV;
-		ShaderParameters->CharacterPositions = DataInterfaceProxy.DefaultFloatBuffer.SRV;
-		ShaderParameters->LineStartIndices = DataInterfaceProxy.DefaultUIntBuffer.SRV;
-		ShaderParameters->LineCharacterCounts = DataInterfaceProxy.DefaultUIntBuffer.SRV;
-		ShaderParameters->WordStartIndices = DataInterfaceProxy.DefaultUIntBuffer.SRV;
-		ShaderParameters->WordCharacterCounts = DataInterfaceProxy.DefaultUIntBuffer.SRV;
 		ShaderParameters->NumChars = 0;
 		ShaderParameters->NumLines = 0;
 		ShaderParameters->NumWords = 0;
@@ -833,7 +839,7 @@ bool UNTTDataInterface::Equals(const UNiagaraDataInterface* Other) const
 		&& OtherTyped->HorizontalAlignment == HorizontalAlignment
 		&& OtherTyped->VerticalAlignment == VerticalAlignment
 		&& OtherTyped->bFilterWhitespaceCharacters == bFilterWhitespaceCharacters;
-	UE_LOG(LogNiagaraTextToolkit, Verbose, TEXT("NTT DI: Equals - ThisAsset=%s OtherAsset=%s Result=%s"),
+		UE_LOG(LogNiagaraTextToolkit, Verbose, TEXT("NTT DI: Equals - ThisAsset=%s OtherAsset=%s Result=%s"),
 		*GetNameSafe(FontAsset),
 		OtherTyped ? *GetNameSafe(OtherTyped->FontAsset) : TEXT("nullptr"),
 		bEqual ? TEXT("true") : TEXT("false"));
@@ -923,9 +929,6 @@ void UNTTDataInterface::GetCharacterUVVM(FVectorVMExternalFunctionContext& Conte
 	const TArray<int32>& Unicode = InstData.Get()->Unicode;
 	const TArray<FVector4>& TextureUvs = InstData.Get()->CharacterTextureUvs;
 	const int32 NumRects = TextureUvs.Num();
-
-	UE_LOG(LogNiagaraTextToolkit, Verbose, TEXT("NTT DI: GetCharacterUVVM - NumInstances=%d, CharacterTextureUvs.Num=%d"),
-		Context.GetNumInstances(), NumRects);
 
 	// Iterate over the particles
 	for (int32 i = 0; i < Context.GetNumInstances(); ++i)

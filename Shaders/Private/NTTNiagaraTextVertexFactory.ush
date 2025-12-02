@@ -708,12 +708,18 @@ float4 GetNiagaraUVRectIndirect(uint InstanceID)
 	int CharIndex = (int)GetNiagaraCharacterIndex(InstanceID);
 
 	// 2. Look up the Unicode value from the DI buffer
-	uint Unicode = NTTNiagaraTextVFLooseParameters.UnicodeBuffer[CharIndex];
+	int UnicodeBase = NTTNiagaraTextVFLooseParameters.Offset_Unicode + CharIndex;
+	uint Unicode = asint(NTTNiagaraTextVFLooseParameters.PackedBuffer[UnicodeBase]);
 
 	// 3. Look up the UV Rect from the DI buffer
 	// CharacterTextureUvsBuffer is bound as Buffer<float4>
 	
-	float4 RawRect = NTTNiagaraTextVFLooseParameters.CharacterTextureUvsBuffer[Unicode];
+	int Base = NTTNiagaraTextVFLooseParameters.Offset_UVs + Unicode * 4;
+	float4 RawRect;
+	RawRect.x = NTTNiagaraTextVFLooseParameters.PackedBuffer[Base + 0];
+	RawRect.y = NTTNiagaraTextVFLooseParameters.PackedBuffer[Base + 1];
+	RawRect.z = NTTNiagaraTextVFLooseParameters.PackedBuffer[Base + 2];
+	RawRect.w = NTTNiagaraTextVFLooseParameters.PackedBuffer[Base + 3];
 	
 	float4 UVRect;
 	// DI Data Layout: (USize, VSize, UStart, VStart) -> (x, y, z, w)
@@ -834,8 +840,14 @@ FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput In
 
 	// Scale by the font sprite size
 	int CharIndex = (int)GetNiagaraCharacterIndex(ParticleID);
-	uint UnicodeIndex = NTTNiagaraTextVFLooseParameters.UnicodeBuffer[CharIndex];
-	float2 SpriteSizeScale = NTTNiagaraTextVFLooseParameters.CharacterSpriteSizesBuffer[UnicodeIndex];
+	int UnicodeBase = NTTNiagaraTextVFLooseParameters.Offset_Unicode + CharIndex;
+	uint UnicodeIndex = asint(NTTNiagaraTextVFLooseParameters.PackedBuffer[UnicodeBase]);
+	
+	int SizeBase = NTTNiagaraTextVFLooseParameters.Offset_Sizes + UnicodeIndex * 2;
+	float2 SpriteSizeScale;
+	SpriteSizeScale.x = NTTNiagaraTextVFLooseParameters.PackedBuffer[SizeBase + 0];
+	SpriteSizeScale.y = NTTNiagaraTextVFLooseParameters.PackedBuffer[SizeBase + 1];
+	
 	Intermediates.Size = SpriteSizeScale;
 
 	Intermediates.Color	= GetNiagaraParticleColor(ParticleID);

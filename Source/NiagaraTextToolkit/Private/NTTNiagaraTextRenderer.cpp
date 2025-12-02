@@ -780,9 +780,10 @@ void FNTTNiagaraTextRenderer::CreateMeshBatchForView(
 	VFLooseParams.NiagaraFloatDataStride = FMath::Max(ParticleSpriteRenderData.ParticleFloatDataStride, ParticleSpriteRenderData.ParticleHalfDataStride);
 	VFLooseParams.NiagaraIntDataStride = ParticleSpriteRenderData.ParticleIntDataStride;
 
-	VFLooseParams.UnicodeBuffer = FNiagaraRenderer::GetDummyIntBuffer();
-	VFLooseParams.CharacterTextureUvsBuffer = FNiagaraRenderer::GetDummyFloatBuffer();
-	VFLooseParams.CharacterSpriteSizesBuffer = FNiagaraRenderer::GetDummyFloatBuffer();
+	VFLooseParams.PackedBuffer = FNiagaraRenderer::GetDummyFloatBuffer();
+	VFLooseParams.Offset_UVs = 0;
+	VFLooseParams.Offset_Sizes = 0;
+	VFLooseParams.Offset_Unicode = 0;
 
 	if (ParticleSpriteRenderData.DynamicDataSprites && ParticleSpriteRenderData.DynamicDataSprites->NTTDIProxy)
 		{
@@ -793,17 +794,12 @@ void FNTTNiagaraTextRenderer::CreateMeshBatchForView(
 		{
 			if (FNDIFontUVInfoProxy::FRTInstanceData* InstanceData = InstanceDataPtr)
 			{
-				if (InstanceData->UnicodeBuffer.SRV.IsValid())
+				if (InstanceData->PackedBuffer.SRV.IsValid())
 				{
-					VFLooseParams.UnicodeBuffer = InstanceData->UnicodeBuffer.SRV;
-				}
-				if (InstanceData->CharacterTextureUvsBuffer.SRV.IsValid())
-				{
-					VFLooseParams.CharacterTextureUvsBuffer = InstanceData->CharacterTextureUvsBuffer.SRV;
-				}
-				if (InstanceData->CharacterSpriteSizesBuffer.SRV.IsValid())
-				{
-					VFLooseParams.CharacterSpriteSizesBuffer = InstanceData->CharacterSpriteSizesBuffer.SRV;
+					VFLooseParams.PackedBuffer = InstanceData->PackedBuffer.SRV;
+					VFLooseParams.Offset_UVs = InstanceData->Offset_UVs;
+					VFLooseParams.Offset_Sizes = InstanceData->Offset_Sizes;
+					VFLooseParams.Offset_Unicode = InstanceData->Offset_Unicode;
 				}
 			}
 		}

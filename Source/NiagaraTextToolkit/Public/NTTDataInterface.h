@@ -49,51 +49,53 @@ struct FNDIFontUVInfoInstanceData
 // This proxy is used to safely copy data between game thread and render thread
 struct FNDIFontUVInfoProxy : public FNiagaraDataInterfaceProxy
 {
-	virtual int32 PerInstanceDataPassedToRenderThreadSize() const override { return sizeof(FNDIFontUVInfoInstanceData); }
+	// We manage render-thread buffers explicitly via InitPerInstanceData/UpdateData_RT,
+	// so we don't need Niagara's per-frame GT->RT instance data path.
+	virtual int32 PerInstanceDataPassedToRenderThreadSize() const override { return 0; }
 
 	virtual ~FNDIFontUVInfoProxy() override
 	{
-		DefaultUVRectsBuffer.Release();
-		DefaultUIntBuffer.Release();
-		DefaultFloatBuffer.Release();
+		PackedBuffer.Release();
 	}
 
-	FRWBufferStructured DefaultUVRectsBuffer;
-	FRWBufferStructured DefaultUIntBuffer;
-	FRWBufferStructured DefaultFloatBuffer;
+	FRWBufferStructured PackedBuffer;
 	bool bDefaultInitialized = false;
 
 	struct FRTInstanceData
 	{
-		FRWBufferStructured CharacterTextureUvsBuffer;
-		FRWBufferStructured CharacterSpriteSizesBuffer;
+		FRWBufferStructured PackedBuffer;
 		uint32 NumRects = 0;
-		FRWBufferStructured UnicodeBuffer;
-		FRWBufferStructured CharacterPositionsBuffer;
-		FRWBufferStructured LineStartIndicesBuffer;
-		FRWBufferStructured LineCharacterCountBuffer;
-		FRWBufferStructured WordStartIndicesBuffer;
-		FRWBufferStructured WordCharacterCountBuffer;
 		uint32 NumChars = 0;
 		uint32 NumLines = 0;
 		uint32 NumWords = 0;
 		uint32 bFilterWhitespaceCharactersValue = 1;
+		
+		uint32 Offset_UVs = 0;
+		uint32 Offset_Sizes = 0;
+		uint32 Offset_Unicode = 0;
+		uint32 Offset_Positions = 0;
+		uint32 Offset_LineStart = 0;
+		uint32 Offset_LineCount = 0;
+		uint32 Offset_WordStart = 0;
+		uint32 Offset_WordCount = 0;
 
 		void Release()
 		{
-			CharacterTextureUvsBuffer.Release();
-			CharacterSpriteSizesBuffer.Release();
-			UnicodeBuffer.Release();
-			CharacterPositionsBuffer.Release();
-			LineStartIndicesBuffer.Release();
-			LineCharacterCountBuffer.Release();
-			WordStartIndicesBuffer.Release();
-			WordCharacterCountBuffer.Release();
+			PackedBuffer.Release();
 			NumRects = 0;
 			NumChars = 0;
 			NumLines = 0;
 			NumWords = 0;
 			bFilterWhitespaceCharactersValue = 1;
+		
+			Offset_UVs = 0;
+			Offset_Sizes = 0;
+			Offset_Unicode = 0;
+			Offset_Positions = 0;
+			Offset_LineStart = 0;
+			Offset_LineCount = 0;
+			Offset_WordStart = 0;
+			Offset_WordCount = 0;
 		}
 	};
 
@@ -101,23 +103,11 @@ struct FNDIFontUVInfoProxy : public FNiagaraDataInterfaceProxy
 	{
 		if (!bDefaultInitialized)
 		{
-			DefaultUVRectsBuffer.Initialize(RHICmdList, TEXT("NTT_CharacterTextureUvs_Default"), sizeof(FVector4f), 1, BUF_ShaderResource | BUF_Static);
-			const FVector4f Zero(0, 0, 0, 0);
-			void* Dest = RHICmdList.LockBuffer(DefaultUVRectsBuffer.Buffer, 0, sizeof(FVector4f), RLM_WriteOnly);
-			FMemory::Memcpy(Dest, &Zero, sizeof(FVector4f));
-			RHICmdList.UnlockBuffer(DefaultUVRectsBuffer.Buffer);
-
-			DefaultUIntBuffer.Initialize(RHICmdList, TEXT("NTT_UInt_Default"), sizeof(uint32), 1, BUF_ShaderResource | BUF_Static);
-			uint32 ZeroU = 0;
-			void* DestU = RHICmdList.LockBuffer(DefaultUIntBuffer.Buffer, 0, sizeof(uint32), RLM_WriteOnly);
-			FMemory::Memcpy(DestU, &ZeroU, sizeof(uint32));
-			RHICmdList.UnlockBuffer(DefaultUIntBuffer.Buffer);
-
-			DefaultFloatBuffer.Initialize(RHICmdList, TEXT("NTT_Float2_Default"), sizeof(FVector2f), 1, BUF_ShaderResource | BUF_Static);
-			const FVector2f ZeroF2(0.0f, 0.0f);
-			void* DestF = RHICmdList.LockBuffer(DefaultFloatBuffer.Buffer, 0, sizeof(FVector2f), RLM_WriteOnly);
-			FMemory::Memcpy(DestF, &ZeroF2, sizeof(FVector2f));
-			RHICmdList.UnlockBuffer(DefaultFloatBuffer.Buffer);
+			PackedBuffer.Initialize(RHICmdList, TEXT("NTT_Packed_Default"), sizeof(float), 4, BUF_ShaderResource | BUF_Static);
+			float Zeros[4] = { 0, 0, 0, 0 };
+			void* Dest = RHICmdList.LockBuffer(PackedBuffer.Buffer, 0, sizeof(float) * 4, RLM_WriteOnly);
+			FMemory::Memcpy(Dest, &Zeros, sizeof(float) * 4);
+			RHICmdList.UnlockBuffer(PackedBuffer.Buffer);
 			bDefaultInitialized = true;
 		}
 	}
@@ -139,223 +129,135 @@ struct FNDIFontUVInfoProxy : public FNiagaraDataInterfaceProxy
 	{
 		FRTInstanceData& RTInstance = SystemInstancesToInstanceData_RT.FindOrAdd(InstanceID);
 
-		// Upload / rebuild structured buffers on RT
-		const int32 NumRects = InstanceDataFromGT->CharacterTextureUvs.Num();
+		// Release old data first. This resets all counts and offsets to 0.
 		RTInstance.Release();
-		const uint32 RectStride = sizeof(FVector4f);
-		const uint32 RectCount  = FMath::Max(NumRects, 1);
-		RTInstance.NumRects = (uint32)NumRects;
-		RTInstance.CharacterTextureUvsBuffer.Initialize(RHICmdList, TEXT("NTT_CharacterTextureUvs"), RectStride, RectCount, BUF_ShaderResource | BUF_Static);
 
-		const uint32 RectNumBytes = RectStride * RectCount;
-		// Convert to float4 to match HLSL StructuredBuffer<float4> for CharacterTextureUvs
-		TArray<FVector4f> TempFloatRects;
-		TempFloatRects.SetNumUninitialized(RectCount);
-		if (NumRects > 0)
+		// Calculate sizes
+		const int32 NumRects = InstanceDataFromGT->CharacterTextureUvs.Num();
+		const int32 NumChars = InstanceDataFromGT->Unicode.Num();
+		const int32 NumLines = InstanceDataFromGT->LineStartIndices.Num();
+		const int32 NumWords = InstanceDataFromGT->WordStartIndices.Num();
+
+		RTInstance.NumRects = (uint32)NumRects;
+		RTInstance.NumChars = (uint32)NumChars;
+		RTInstance.NumLines = (uint32)NumLines;
+		RTInstance.NumWords = (uint32)NumWords;
+		RTInstance.bFilterWhitespaceCharactersValue = InstanceDataFromGT->bFilterWhitespaceCharactersValue ? 1u : 0u;
+
+		// Calculate offsets (in floats) directly into the struct
+		RTInstance.Offset_UVs = 0;
+		uint32 CurrentOffset = RTInstance.Offset_UVs + NumRects * 4;
+
+		RTInstance.Offset_Sizes = CurrentOffset;
+		CurrentOffset += NumRects * 2;
+
+		RTInstance.Offset_Unicode = CurrentOffset;
+		CurrentOffset += NumChars * 1;
+
+		RTInstance.Offset_Positions = CurrentOffset;
+		CurrentOffset += NumChars * 2;
+
+		RTInstance.Offset_LineStart = CurrentOffset;
+		CurrentOffset += NumLines * 1;
+
+		RTInstance.Offset_LineCount = CurrentOffset;
+		CurrentOffset += NumLines * 1;
+
+		RTInstance.Offset_WordStart = CurrentOffset;
+		CurrentOffset += NumWords * 1;
+
+		RTInstance.Offset_WordCount = CurrentOffset;
+		CurrentOffset += NumWords * 1;
+
+		const uint32 TotalFloats = FMath::Max(CurrentOffset, 1u);
+
+		// Initialize buffer
+		RTInstance.PackedBuffer.Initialize(RHICmdList, TEXT("NTT_PackedBuffer"), sizeof(float), TotalFloats, BUF_ShaderResource | BUF_Static);
+
+		float* DestInfo = (float*)RHICmdList.LockBuffer(RTInstance.PackedBuffer.Buffer, 0, TotalFloats * sizeof(float), RLM_WriteOnly);
+
+		// Helper to safely write data
+		if (TotalFloats == 1 && CurrentOffset == 0)
 		{
-			for (int32 i = 0; i < NumRects; ++i)
-			{
-				const FVector4& Src = InstanceDataFromGT->CharacterTextureUvs[i];
-				TempFloatRects[i] = FVector4f((float)Src.X, (float)Src.Y, (float)Src.Z, (float)Src.W);
-			}
+			DestInfo[0] = 0.0f;
 		}
 		else
 		{
-			TempFloatRects[0] = FVector4f(0, 0, 0, 0);
+			// UVs (float4)
+			for (int32 i = 0; i < NumRects; ++i)
+			{
+				const FVector4& Src = InstanceDataFromGT->CharacterTextureUvs[i];
+				int32 Base = RTInstance.Offset_UVs + i * 4;
+				DestInfo[Base + 0] = (float)Src.X;
+				DestInfo[Base + 1] = (float)Src.Y;
+				DestInfo[Base + 2] = (float)Src.Z;
+				DestInfo[Base + 3] = (float)Src.W;
+			}
+
+			// Sizes (float2)
+			for (int32 i = 0; i < NumRects; ++i)
+			{
+				const FVector2f& Src = InstanceDataFromGT->CharacterSpriteSizes[i];
+				int32 Base = RTInstance.Offset_Sizes + i * 2;
+				DestInfo[Base + 0] = Src.X;
+				DestInfo[Base + 1] = Src.Y;
+			}
+
+			// Unicode (int32 -> asfloat)
+			for (int32 i = 0; i < NumChars; ++i)
+			{
+				int32 Src = InstanceDataFromGT->Unicode[i];
+				int32 Base = RTInstance.Offset_Unicode + i;
+				FMemory::Memcpy(&DestInfo[Base], &Src, sizeof(int32));
+			}
+
+			// Positions (float2)
+			for (int32 i = 0; i < NumChars; ++i)
+			{
+				const FVector2f& Src = InstanceDataFromGT->CharacterPositions[i];
+				int32 Base = RTInstance.Offset_Positions + i * 2;
+				DestInfo[Base + 0] = Src.X;
+				DestInfo[Base + 1] = Src.Y;
+			}
+
+			// LineStartIndices (int32)
+			for (int32 i = 0; i < NumLines; ++i)
+			{
+				int32 Src = InstanceDataFromGT->LineStartIndices[i];
+				int32 Base = RTInstance.Offset_LineStart + i;
+				FMemory::Memcpy(&DestInfo[Base], &Src, sizeof(int32));
+			}
+
+			// LineCharacterCounts (int32)
+			for (int32 i = 0; i < NumLines; ++i)
+			{
+				int32 Src = InstanceDataFromGT->LineCharacterCounts[i];
+				int32 Base = RTInstance.Offset_LineCount + i;
+				FMemory::Memcpy(&DestInfo[Base], &Src, sizeof(int32));
+			}
+
+			// WordStartIndices (int32)
+			for (int32 i = 0; i < NumWords; ++i)
+			{
+				int32 Src = InstanceDataFromGT->WordStartIndices[i];
+				int32 Base = RTInstance.Offset_WordStart + i;
+				FMemory::Memcpy(&DestInfo[Base], &Src, sizeof(int32));
+			}
+
+			// WordCharacterCounts (int32)
+			for (int32 i = 0; i < NumWords; ++i)
+			{
+				int32 Src = InstanceDataFromGT->WordCharacterCounts[i];
+				int32 Base = RTInstance.Offset_WordCount + i;
+				FMemory::Memcpy(&DestInfo[Base], &Src, sizeof(int32));
+			}
 		}
 
-		void* DestRects = RHICmdList.LockBuffer(RTInstance.CharacterTextureUvsBuffer.Buffer, 0, RectNumBytes, RLM_WriteOnly);
-		FMemory::Memcpy(DestRects, TempFloatRects.GetData(), RectNumBytes);
-		RHICmdList.UnlockBuffer(RTInstance.CharacterTextureUvsBuffer.Buffer);
-
-		// Upload sprite sizes buffer (float2 per glyph, in pixels)
-		{
-			const int32 NumSpriteSizes = InstanceDataFromGT->CharacterSpriteSizes.Num();
-			const uint32 SizeStride = sizeof(FVector2f);
-			const uint32 SizeCount  = FMath::Max(NumSpriteSizes, 1);
-			RTInstance.CharacterSpriteSizesBuffer.Initialize(RHICmdList, TEXT("NTT_CharacterSpriteSizes"), SizeStride, SizeCount, BUF_ShaderResource | BUF_Static);
-
-			TArray<FVector2f> TempSizes;
-			TempSizes.SetNumUninitialized(SizeCount);
-			if (NumSpriteSizes > 0)
-			{
-				FMemory::Memcpy(TempSizes.GetData(), InstanceDataFromGT->CharacterSpriteSizes.GetData(), sizeof(FVector2f) * NumSpriteSizes);
-			}
-			else
-			{
-				TempSizes[0] = FVector2f(0.0f, 0.0f);
-			}
-
-			void* DestSizes = RHICmdList.LockBuffer(RTInstance.CharacterSpriteSizesBuffer.Buffer, 0, SizeStride * SizeCount, RLM_WriteOnly);
-			FMemory::Memcpy(DestSizes, TempSizes.GetData(), SizeStride * SizeCount);
-			RHICmdList.UnlockBuffer(RTInstance.CharacterSpriteSizesBuffer.Buffer);
-		}
-
-		// Upload Unicode buffer
-		{
-			const int32 NumChars = InstanceDataFromGT->Unicode.Num();
-			RTInstance.NumChars = (uint32)NumChars;
-			const uint32 UIntStride = sizeof(uint32);
-			const uint32 UIntCount  = FMath::Max(NumChars, 1);
-			RTInstance.UnicodeBuffer.Initialize(RHICmdList, TEXT("NTT_Unicode"), UIntStride, UIntCount, BUF_ShaderResource | BUF_Static);
-
-			TArray<uint32> TempUInts;
-			TempUInts.SetNumUninitialized(UIntCount);
-			if (NumChars > 0)
-			{
-				for (int32 i = 0; i < NumChars; ++i)
-				{
-					TempUInts[i] = (uint32)InstanceDataFromGT->Unicode[i];
-				}
-			}
-			else
-			{
-				TempUInts[0] = 0;
-			}
-
-			void* DestU = RHICmdList.LockBuffer(RTInstance.UnicodeBuffer.Buffer, 0, UIntStride * UIntCount, RLM_WriteOnly);
-			FMemory::Memcpy(DestU, TempUInts.GetData(), UIntStride * UIntCount);
-			RHICmdList.UnlockBuffer(RTInstance.UnicodeBuffer.Buffer);
-		}
-
-		// Upload character positions buffer
-		{
-			const int32 NumPositions = InstanceDataFromGT->CharacterPositions.Num();
-			const uint32 FStride = sizeof(FVector2f);
-			const uint32 FCount  = FMath::Max(NumPositions, 1);
-			RTInstance.CharacterPositionsBuffer.Initialize(RHICmdList, TEXT("NTT_CharacterPositions"), FStride, FCount, BUF_ShaderResource | BUF_Static);
-
-			TArray<FVector2f> TempVectors;
-			TempVectors.SetNumUninitialized(FCount);
-			if (NumPositions > 0)
-			{
-				FMemory::Memcpy(TempVectors.GetData(), InstanceDataFromGT->CharacterPositions.GetData(), sizeof(FVector2f) * NumPositions);
-			}
-			else
-			{
-				TempVectors[0] = FVector2f(0.0f, 0.0f);
-			}
-
-			void* DestF = RHICmdList.LockBuffer(RTInstance.CharacterPositionsBuffer.Buffer, 0, FStride * FCount, RLM_WriteOnly);
-			FMemory::Memcpy(DestF, TempVectors.GetData(), FStride * FCount);
-			RHICmdList.UnlockBuffer(RTInstance.CharacterPositionsBuffer.Buffer);
-		}
-
-		// Upload line start indices buffer
-		{
-			const int32 NumLineStartIndices = InstanceDataFromGT->LineStartIndices.Num();
-			const uint32 LStride = sizeof(uint32);
-			const uint32 LCount  = FMath::Max(NumLineStartIndices, 1);
-			RTInstance.LineStartIndicesBuffer.Initialize(RHICmdList, TEXT("NTT_LineStartIndices"), LStride, LCount, BUF_ShaderResource | BUF_Static);
-
-			TArray<uint32> TempLineStartIndices;
-			TempLineStartIndices.SetNumUninitialized(LCount);
-			if (NumLineStartIndices > 0)
-			{
-				for (int32 i = 0; i < NumLineStartIndices; ++i)
-				{
-					TempLineStartIndices[i] = (uint32)InstanceDataFromGT->LineStartIndices[i];
-				}
-			}
-			else
-			{
-				TempLineStartIndices[0] = 0;
-			}
-
-			void* DestL = RHICmdList.LockBuffer(RTInstance.LineStartIndicesBuffer.Buffer, 0, LStride * LCount, RLM_WriteOnly);
-			FMemory::Memcpy(DestL, TempLineStartIndices.GetData(), LStride * LCount);
-			RHICmdList.UnlockBuffer(RTInstance.LineStartIndicesBuffer.Buffer);
-		}
-
-		// Upload per-line character counts buffer
-		{
-			const int32 NumLineCounts = InstanceDataFromGT->LineCharacterCounts.Num();
-			const uint32 CStride = sizeof(uint32);
-			const uint32 CCount  = FMath::Max(NumLineCounts, 1);
-			RTInstance.LineCharacterCountBuffer.Initialize(RHICmdList, TEXT("NTT_LineCharacterCounts"), CStride, CCount, BUF_ShaderResource | BUF_Static);
-
-			TArray<uint32> TempLineCounts;
-			TempLineCounts.SetNumUninitialized(CCount);
-			if (NumLineCounts > 0)
-			{
-				for (int32 i = 0; i < NumLineCounts; ++i)
-				{
-					TempLineCounts[i] = (uint32)InstanceDataFromGT->LineCharacterCounts[i];
-				}
-			}
-			else
-			{
-				TempLineCounts[0] = 0;
-			}
-
-			void* DestC = RHICmdList.LockBuffer(RTInstance.LineCharacterCountBuffer.Buffer, 0, CStride * CCount, RLM_WriteOnly);
-			FMemory::Memcpy(DestC, TempLineCounts.GetData(), CStride * CCount);
-			RHICmdList.UnlockBuffer(RTInstance.LineCharacterCountBuffer.Buffer);
-		}
-
-		// Upload word start indices buffer
-		{
-			const int32 NumWordStartIndices = InstanceDataFromGT->WordStartIndices.Num();
-			const uint32 WStride = sizeof(uint32);
-			const uint32 WCount  = FMath::Max(NumWordStartIndices, 1);
-			RTInstance.WordStartIndicesBuffer.Initialize(RHICmdList, TEXT("NTT_WordStartIndices"), WStride, WCount, BUF_ShaderResource | BUF_Static);
-
-			TArray<uint32> TempWordStartIndices;
-			TempWordStartIndices.SetNumUninitialized(WCount);
-			if (NumWordStartIndices > 0)
-			{
-				for (int32 i = 0; i < NumWordStartIndices; ++i)
-				{
-					TempWordStartIndices[i] = (uint32)InstanceDataFromGT->WordStartIndices[i];
-				}
-			}
-			else
-			{
-				TempWordStartIndices[0] = 0;
-			}
-
-			void* DestW = RHICmdList.LockBuffer(RTInstance.WordStartIndicesBuffer.Buffer, 0, WStride * WCount, RLM_WriteOnly);
-			FMemory::Memcpy(DestW, TempWordStartIndices.GetData(), WStride * WCount);
-			RHICmdList.UnlockBuffer(RTInstance.WordStartIndicesBuffer.Buffer);
-		}
-
-		// Upload per-word character counts buffer
-		{
-			const int32 NumWordCounts = InstanceDataFromGT->WordCharacterCounts.Num();
-			const uint32 WCStride = sizeof(uint32);
-			const uint32 WCCount  = FMath::Max(NumWordCounts, 1);
-			RTInstance.WordCharacterCountBuffer.Initialize(RHICmdList, TEXT("NTT_WordCharacterCounts"), WCStride, WCCount, BUF_ShaderResource | BUF_Static);
-
-			TArray<uint32> TempWordCounts;
-			TempWordCounts.SetNumUninitialized(WCCount);
-			if (NumWordCounts > 0)
-			{
-				for (int32 i = 0; i < NumWordCounts; ++i)
-				{
-					TempWordCounts[i] = (uint32)InstanceDataFromGT->WordCharacterCounts[i];
-				}
-			}
-			else
-			{
-				TempWordCounts[0] = 0;
-			}
-
-			void* DestWC = RHICmdList.LockBuffer(RTInstance.WordCharacterCountBuffer.Buffer, 0, WCStride * WCCount, RLM_WriteOnly);
-			FMemory::Memcpy(DestWC, TempWordCounts.GetData(), WCStride * WCCount);
-			RHICmdList.UnlockBuffer(RTInstance.WordCharacterCountBuffer.Buffer);
-		}
-
-		// Copy line and word count and flags
-		RTInstance.NumChars = (uint32)InstanceDataFromGT->Unicode.Num();
-		RTInstance.NumLines = (uint32)InstanceDataFromGT->LineStartIndices.Num();
-		RTInstance.NumWords = (uint32)InstanceDataFromGT->WordStartIndices.Num();
-		RTInstance.bFilterWhitespaceCharactersValue = InstanceDataFromGT->bFilterWhitespaceCharactersValue ? 1u : 0u;
+		RHICmdList.UnlockBuffer(RTInstance.PackedBuffer.Buffer);
 	}
 
 	virtual void ConsumePerInstanceDataFromGameThread(void* PerInstanceData, const FNiagaraSystemInstanceID& InstanceID) override
 	{
-UE_LOG(LogNiagaraTextToolkit, Log, TEXT("UpdateData_RT: called by RT, InstanceID=%llu"), (uint64)InstanceID);
-
 		UE_LOG(LogNiagaraTextToolkit, Log, TEXT("NTT DI Proxy: ConsumePerInstanceDataFromGameThread - Proxy=%p, InstanceID=%llu"), 
 			this, (uint64)InstanceID);
 
@@ -366,9 +268,6 @@ UE_LOG(LogNiagaraTextToolkit, Log, TEXT("UpdateData_RT: called by RT, InstanceID
 
 		// Call the destructor to clean up the GT data
 		InstanceDataFromGT->~FNDIFontUVInfoInstanceData();
-
-		UE_LOG(LogNiagaraTextToolkit, Verbose, TEXT("NTT DI (RT): ConsumePerInstanceDataFromGameThread - InstanceID=%llu, CharacterTextureUvs.Num=%u"),
-			(uint64)InstanceID, SystemInstancesToInstanceData_RT.FindOrAdd(InstanceID).NumRects);
 	}
 
 	TMap<FNiagaraSystemInstanceID, FRTInstanceData> SystemInstancesToInstanceData_RT;
@@ -381,21 +280,22 @@ class NIAGARATEXTTOOLKIT_API UNTTDataInterface : public UNiagaraDataInterface
 
 public:
 	BEGIN_SHADER_PARAMETER_STRUCT(FShaderParameters, )
-		// Normalized per-glyph texture UVs (USize, VSize, UStart, VStart), all in 0-1 texture space
-		SHADER_PARAMETER_SRV(	StructuredBuffer<float4>,	CharacterTextureUvs)
-		// Per-glyph sprite size in pixels, used for layout / particle sizing
-		SHADER_PARAMETER_SRV(	StructuredBuffer<float2>,	CharacterSpriteSizes)
-		SHADER_PARAMETER(		uint32,						NumRects)
-		SHADER_PARAMETER_SRV(	StructuredBuffer<uint>,		TextUnicode)
-		SHADER_PARAMETER_SRV(	StructuredBuffer<float2>,	CharacterPositions)
-		SHADER_PARAMETER_SRV(	StructuredBuffer<uint>,		LineStartIndices)
-		SHADER_PARAMETER_SRV(	StructuredBuffer<uint>,		LineCharacterCounts)
-		SHADER_PARAMETER_SRV(	StructuredBuffer<uint>,		WordStartIndices)
-		SHADER_PARAMETER_SRV(	StructuredBuffer<uint>,		WordCharacterCounts)
-		SHADER_PARAMETER(		uint32,						NumChars)
-		SHADER_PARAMETER(		uint32,						NumLines)
-		SHADER_PARAMETER(		uint32,						NumWords)
-		SHADER_PARAMETER(		uint32,						bFilterWhitespaceCharactersValue)
+		SHADER_PARAMETER_SRV(StructuredBuffer<float>, PackedBuffer)
+
+		SHADER_PARAMETER(uint32, Offset_UVs)
+		SHADER_PARAMETER(uint32, Offset_Sizes)
+		SHADER_PARAMETER(uint32, Offset_Unicode)
+		SHADER_PARAMETER(uint32, Offset_Positions)
+		SHADER_PARAMETER(uint32, Offset_LineStart)
+		SHADER_PARAMETER(uint32, Offset_LineCount)
+		SHADER_PARAMETER(uint32, Offset_WordStart)
+		SHADER_PARAMETER(uint32, Offset_WordCount)
+
+		SHADER_PARAMETER(uint32, NumRects)
+		SHADER_PARAMETER(uint32, NumChars)
+		SHADER_PARAMETER(uint32, NumLines)
+		SHADER_PARAMETER(uint32, NumWords)
+		SHADER_PARAMETER(uint32, bFilterWhitespaceCharactersValue)
 	END_SHADER_PARAMETER_STRUCT()
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (DisplayName = "Font Asset"))
