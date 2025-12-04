@@ -43,9 +43,9 @@ UNTTNiagaraTextRendererProperties::UNTTNiagaraTextRendererProperties()
 	, MaterialUserParamBinding(FNiagaraTypeDefinition(UMaterialInterface::StaticClass()))
 	, bOverrideFontMaterialParameter(true)
 	, OverrideFontParameterName(FName("NTT_Font"))
-	, NTTDataInterfaceBinding(FNiagaraTypeDefinition(UNTTDataInterface::StaticClass()))
 	, bRemoveHMDRollInVR(false)
 	, bSortOnlyWhenTranslucent(true)
+	, NTTDataInterfaceBinding(FNiagaraTypeDefinition(UNTTDataInterface::StaticClass()))
 {
 	AttributeBindings =
 	{
@@ -113,7 +113,7 @@ void UNTTNiagaraTextRendererProperties::GetUsedMaterials(const FNiagaraEmitterIn
 	OutMaterials.Add(MaterialInterface ? MaterialInterface : ToRawPtr(Material));
 }
 
-void UNTTNiagaraTextRendererProperties::CollectPSOPrecacheData(FPSOPrecacheParamsList& OutParams)
+void UNTTNiagaraTextRendererProperties::CollectPSOPrecacheData(const FNiagaraEmitterInstance* InEmitter, FPSOPrecacheParamsList& OutParams) const
 {
 	const FVertexFactoryType* VFType = GetVertexFactoryType();
 	UMaterialInterface* MaterialInterface = ToRawPtr(Material);
@@ -153,7 +153,7 @@ void UNTTNiagaraTextRendererProperties::PostLoad()
 	PostLoadBindings(SourceMode);
 
 	// Fix up these bindings from their loaded source bindings
-	SetPreviousBindings(FVersionedNiagaraEmitter(), SourceMode);
+	SetPreviousBindings(FVersionedNiagaraEmitterBase(), SourceMode);
 
 	if (MaterialParameterBindings_DEPRECATED.Num() > 0)
 	{
@@ -273,10 +273,10 @@ void UNTTNiagaraTextRendererProperties::InitBindings()
 		CustomSortingBinding = FNiagaraConstants::GetAttributeDefaultBinding(SYS_PARAM_PARTICLES_NORMALIZED_AGE);
 	}
 
-	SetPreviousBindings(FVersionedNiagaraEmitter(), SourceMode);
+	SetPreviousBindings(FVersionedNiagaraEmitterBase(), SourceMode);
 }
 
-void UNTTNiagaraTextRendererProperties::SetPreviousBindings(const FVersionedNiagaraEmitter& SrcEmitter, ENiagaraRendererSourceDataMode InSourceMode)
+void UNTTNiagaraTextRendererProperties::SetPreviousBindings(const FVersionedNiagaraEmitterBase& SrcEmitter, ENiagaraRendererSourceDataMode InSourceMode)
 {
 	PrevPositionBinding.SetAsPreviousValue(PositionBinding, SrcEmitter, InSourceMode);
 	PrevVelocityBinding.SetAsPreviousValue(VelocityBinding, SrcEmitter, InSourceMode);
@@ -417,7 +417,7 @@ void UNTTNiagaraTextRendererProperties::UpdateSourceModeDerivates(ENiagaraRender
 			MaterialParamBinding.CacheValues(SrcEmitter);
 		}
 
-		SetPreviousBindings(FVersionedNiagaraEmitter(), InSourceMode);
+		SetPreviousBindings(FVersionedNiagaraEmitterBase(), InSourceMode);
 	}
 }
 
@@ -469,7 +469,7 @@ void UNTTNiagaraTextRendererProperties::PostEditChangeProperty(struct FPropertyC
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 }
 
-void UNTTNiagaraTextRendererProperties::RenameVariable(const FNiagaraVariableBase& OldVariable, const FNiagaraVariableBase& NewVariable, const FVersionedNiagaraEmitter& InEmitter)
+void UNTTNiagaraTextRendererProperties::RenameVariable(const FNiagaraVariableBase& OldVariable, const FNiagaraVariableBase& NewVariable, const FVersionedNiagaraEmitterBase& InEmitter)
 {
 	Super::RenameVariable(OldVariable, NewVariable, InEmitter);
 #if WITH_EDITORONLY_DATA
@@ -477,7 +477,7 @@ void UNTTNiagaraTextRendererProperties::RenameVariable(const FNiagaraVariableBas
 #endif
 }
 
-void UNTTNiagaraTextRendererProperties::RemoveVariable(const FNiagaraVariableBase& OldVariable, const FVersionedNiagaraEmitter& InEmitter)
+void UNTTNiagaraTextRendererProperties::RemoveVariable(const FNiagaraVariableBase& OldVariable, const FVersionedNiagaraEmitterBase& InEmitter)
 {
 	Super::RemoveVariable(OldVariable, InEmitter);
 #if WITH_EDITORONLY_DATA
