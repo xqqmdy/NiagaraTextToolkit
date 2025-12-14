@@ -4,21 +4,13 @@
 
 - [Introduction](#introduction)
 - [Installation](#installation)
-- [How It Works](#how-it-works)
+- [Understanding the Problem](#understanding-the-problem)
+- [The Solution](#the-solution)
 - [Recommended Niagara Emitter Settings](#recommended-niagara-emitter-settings)
 - [Adding Custom Fonts](#adding-custom-fonts)
-  - [Creating a Font Asset](#creating-a-font-asset)
-  - [Configuring Character Set](#configuring-character-set)
-  - [Optimizing Texture Layout](#optimizing-texture-layout)
-  - [Generating Distance Field Texture](#generating-distance-field-texture)
-  - [Extracting the Texture Asset](#extracting-the-texture-asset)
-  - [Using Your Custom Font](#using-your-custom-font)
-- [Documentation](#documentation)
-  - [NTT Data Interface](#ntt-data-interface)
-    - [Properties](#properties)
-    - [Exposed Functions (Niagara)](#exposed-functions-niagara)
-  - [Blueprint Library](#blueprint-library)
-  - [Editor Utilities](#editor-utilities)
+- [NTT Data Interface](#ntt-data-interface)
+- [Blueprint Library](#blueprint-library)
+- [Editor Utilities](#editor-utilities)
 
 ## Introduction
 
@@ -35,35 +27,37 @@ The plugin provides a custom **Niagara Data Interface (NTT Data Interface)** tha
 3. Open your project. Unreal Engine may ask to rebuild the plugin modules; select **Yes**.
 4. Once the editor is open, verify the plugin is enabled by going to **Edit > Plugins** and searching for "Niagara Text Toolkit".
 
-## How It Works
+## Understanding the Problem
 
 Niagara simulations are inherently less flexible than regular game-thread code because they rely on GPU/CPU parallelization and tight data packing for optimization. The benefit is that they’re extremely fast for certain use cases, but the downside is that parallel execution limits the kinds of algorithms you can implement, and the data packing pushes you toward data structures that “play nice” with Niagara.
 
 For text-based particle systems, these limitations show up in a few ways:
 
-First, the data problem. You want to display an input string, but Niagara doesn’t take a string as input. So the first question is: how do you encode your text into a Niagara-friendly data type? One solution is to pass your input as an array of integers, where each element is the Unicode value for a character. This works, but you have to build that array on the game thread before you spawn the system. The Lyra starter game’s “DamageNumbers” takes a different approach: it passes a float and uses math to derive the number of particles from the number of digits. That’s a clever workaround, but it only works for numbers, not a generic string. So if you want arbitrary text, you end up needing some amount of game-thread preprocessing before the Niagara simulation starts.
+First, the data problem. You want to display an input string, but Niagara doesn’t take a string as input. So in order to work with text, we first need to convert the input string into an array of Unicode integers. This means we need to perform this conversion on the game thread before the Niagara simulation starts.
 
-Next is positioning. To position a character properly relative to other characters, you need to know the widths of the characters that came before it, and if you want centered text you also need to know the width of the whole line. That implies (at minimum) two passes over the input: one to compute line widths, and one to compute per-character positions. The problem is you can’t really “do two passes” in Niagara; the simulation just doesn’t work like that. Your options are to precompute on the game thread, or restrict yourself (for example) to monospaced fonts where line width is just `CharacterWidth * CharacterCount`. If you want to support any font (not just monospaced), you need some form of iteration over the input on the game thread.
+Next is positioning. To position a character properly relative to the other characters, you need to know the cumulative width of all the characters that came before it. If you want to center the text, you also need to know the width of the entire line. This means we need to do two passes over the input string. Niagara modules run in parallel for each particle, meaning you can't store data from the "previous" particle as you would in a typical CPU for loop. So again, the solution is to precompute the positioning metrics on the CPU before the simulation begins. 
 
-Then there’s the glyph/UV problem. Even if Niagara can spawn and position particles, each particle still needs to display the right glyph from a texture atlas. Usually that means sampling a subset of a font atlas by applying a per-character UV offset and scale in the material, and you also need a way to communicate “which character am I?” from Niagara to the material. Lyra’s number approach can compute UVs in-material because the digit value doubles as a glyph index, but that breaks down as soon as you want characters that aren’t digits.
+At this point we already have two arrays that we have to precomupte on the CPU before we even start the Niagara simulation. 
 
-So overall, building text in Niagara isn’t as straightforward as it looks: you either limit the scope (like the Lyra example), or you accept that some work needs to happen on the game thread and feed Niagara data that it can consume efficiently.
+The next problem is displaying the right glyph on each particles quad. Usually this is done by storing all the character glyphs in the font on a texture atlas. However, this also means the Niagara simulation needs to tell the material which part of the font atlas to display based on the value of the character. So you need to first create this texture atlas based on whatever font you're using, and then find a way to obtain this UV information either by precalculating it, or coming up with some grid based algorithm. Either way, it's going to require quite a bit of manual setup. 
 
-This plugin takes the “no compromise” approach by doing the game-thread work once up-front and exposing the results to Niagara in a Niagara-friendly way.
+## The Solution
 
-The first key insight is to use Unreal Engine Font Assets. The benefit is you don’t need to manually author textures (the font asset generates them), and you don’t need to hand-calculate per-character UVs (the font asset already has that information).
+This plugins solves all of these problems in a clean and efficient way using Font Assets + Niagara Data Interfaces.
 
-Early versions of this plugin exposed this via a Blueprint library: extract the font texture and character data, convert strings to Unicode arrays, compute character positions, then pass all of that into the Niagara system. It worked, but it was clunky, and Unreal has a better mechanism for this.
+Unreal Engine Font Assets have an "Offline" mode that precomputes a texture and the per character UV information, and so if we can extract this data, there isn't any need to compute the UV's or manually create a texture. 
+
+Early versions of this plugin exposed this via a Blueprint library: extract the font texture and character UV data, convert strings to Unicode arrays, compute character positions, then pass all of that into the Niagara system. It worked, but it was clunky, and Unreal has a better mechanism for this.
 
 Enter Data Interfaces.
 
-In Niagara, Data Interfaces are used to interface data between the game thread and your Niagara simulation. They have an initialization phase that runs once when the system is initialized, where you can process game-thread data and pack it into structures Niagara likes. They also let you define functions that Niagara can call during simulation to retrieve that packed data. (If you want the deep details, feel free to read the source.)
+In Niagara, Data Interfaces are used to interface data between the game thread and your Niagara simulation. They have an initialization phase where you can process game-thread data and pack it into Niagara-friendly data structures. They also let you define functions that you can use to get this data in your Niagara Modules.
 
 Using a Data Interface for text solves a lot of problems in one fell swoop:
 
-- You can assign a **Font Asset** directly in Niagara.
+- You can assign a **Font Asset** directly in Niagara. (Font Texture + UV Data is extracted during initialization)
 - You can type an **Input Text** string directly in Niagara (no manual Unicode array setup).
-- The Data Interface can do the per-string/per-font preprocessing during initialization, and Niagara can query the results via functions like UV/position/size lookups.
+- The Data Interface can calculate character positions during initialization.
 
 At a high level, the workflow looks like this:
 
@@ -76,7 +70,7 @@ At a high level, the workflow looks like this:
 
 The following are recommended settings on Niagara emitters.
 
-First of all, **Persistent IDs** must be enabled to avoid undefined behavior. The Data Interface assumes that the number of particles spawned by the emitter matches the length of the input text (ignoring whitespace if enabled). The plugin assumes you’ll use the `UniqueID` particle property to index each character, so that value needs to be persistent to avoid bugs.
+First of all, **Persistent IDs** must be enabled to avoid undefined behavior. The Data Interface assumes that the number of particles spawned by the emitter matches the length of the input text (ignoring whitespace if enabled). The plugin assumes you’ll use the `UniqueID` particle property to index each character, so that value needs to be persistent to avoid undefined behaviour.
 
 Next, you should enable **Local Space** simulation on your emitters. This isn’t required for the plugin to work, but emitters default to world space, and if you forget to switch to local space your particles will spawn at the world origin instead of where you spawn the Niagara System.
 
@@ -119,7 +113,8 @@ To use custom fonts with the Niagara Text Toolkit, you need to create and config
 ### Generating Distance Field Texture
 
 1. Toggle the **Use Distance Field Alpha** property in the font asset.
-2. Reimport one final time. This will generate a distance field texture which is necessary for features like text borders. The materials included with the plugin expect an SDF (Signed Distance Field) texture.
+2. Reimport the font again. This will generate a distance field texture which is necessary for features like text borders. The materials included with the plugin expect an SDF (Signed Distance Field) texture.
+3. Sometimes doing this can change your layout, make adjustments to the font height as needed.
 
 ### Extracting the Texture Asset
 
@@ -132,13 +127,11 @@ To use custom fonts with the Niagara Text Toolkit, you need to create and config
 1. Add the font asset to the **Font Asset** property in the NTT Data Interface in your Niagara System.
 2. Add the extracted texture to your material parameter collection or material instance.
 
-## Documentation
-
-### NTT Data Interface
+## NTT Data Interface
 
 The core feature of this plugin is the `NTT Data Interface`, which can be added to your Niagara System as a User Parameter.
 
-#### Properties
+### Properties
 
 | Property | Description |
 | --- | --- |
@@ -151,7 +144,7 @@ The core feature of this plugin is the `NTT Data Interface`, which can be added 
 | **Whitespace Width Multiplier** | Multiplies the width of whitespace characters (useful for adjusting word spacing). |
 | **Filter Whitespace Characters** | If enabled, whitespace characters are excluded from the list of valid particle positions (prevents spawning invisible particles). |
 
-#### Exposed Functions (Niagara)
+### Exposed Functions (Niagara)
 
 These functions are available within Niagara Modules (Scratch Pad or Script) when using the NTT Data Interface.
 
@@ -215,7 +208,7 @@ These functions are available within Niagara Modules (Scratch Pad or Script) whe
   - *Outputs*: `FilterWhitespaceCharacters` (bool)
   - *Description*: Returns the current state of the whitespace filter setting.
 
-### Blueprint Library
+## Blueprint Library
 
 The plugin includes the `NiagaraTextToolkitHelpers` library for controlling the system at runtime via Blueprints.
 
@@ -227,7 +220,7 @@ The plugin includes the `NiagaraTextToolkitHelpers` library for controlling the 
   - *Inputs*: `NiagaraSystem` (Niagara Component), `Font` (UFont)
   - *Description*: Updates the `FontAsset` variable on the NTT Data Interface of the target Niagara Component and reinitializes the system.
 
-### Editor Utilities
+## Editor Utilities
 
 - **Save Font Textures To Assets**
   - *Type*: Editor Utility (Scripted Asset Action)
