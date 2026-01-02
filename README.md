@@ -1,5 +1,7 @@
 # Niagara Text Toolkit (NTT)
 
+![Performance comparison between Widget Component and Niagara](Resources/comparison.gif)
+
 ## Table of Contents
 
 - [Introduction](#introduction)
